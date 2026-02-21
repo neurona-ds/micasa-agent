@@ -69,26 +69,29 @@ app.post('/webhook', async (req, res) => {
       return res.status(200).json({ status: 'ignored_owner_message' })
     }
 
-    // WATI sets operatorEmail to the assignee on ALL messages (owner:false included).
-    const humanEmail = (process.env.WATI_HUMAN_EMAIL || '').toLowerCase()
+    // WATI sets operatorEmail + assignedId to the assignee on ALL messages.
+    // We use assignedId (most reliable) with email as fallback.
+    const botAssignedId = (process.env.WATI_BOT_ASSIGNED_ID || '').toLowerCase()
     const botEmail = (process.env.WATI_BOT_EMAIL || '').toLowerCase()
+    const assignedId = (body.assignedId || '').toLowerCase()
     const assigneeEmail = (body.operatorEmail || '').toLowerCase()
 
-    console.log(`assigneeEmail=${assigneeEmail} humanEmail=${humanEmail} botEmail=${botEmail}`)
+    console.log(`assignedId=${assignedId} assigneeEmail=${assigneeEmail} botAssignedId=${botAssignedId} botEmail=${botEmail}`)
 
-    // Block bot if assigned to human agent.
-    // Match by WATI_HUMAN_EMAIL env var, OR if assigneeEmail is set and is NOT the bot email.
-    const isAssignedToHuman = assigneeEmail && (
-      (humanEmail && assigneeEmail === humanEmail) ||
-      (botEmail && assigneeEmail !== botEmail)
-    )
+    // Is this assigned to the bot?
+    const isAssignedToBot =
+      (botAssignedId && assignedId === botAssignedId) ||
+      (!botAssignedId && botEmail && assigneeEmail === botEmail)
+
+    // Is this assigned to a human (not the bot)?
+    const isAssignedToHuman = !isAssignedToBot && (assignedId || assigneeEmail)
 
     let justResumed = false
 
-    // If assigned back to bot email → auto-resume and process message
-    if (botEmail && assigneeEmail === botEmail) {
+    // If assigned to bot → auto-resume and process message
+    if (isAssignedToBot) {
       await resumeBot(customerPhone)
-      console.log(`Auto-resumed: assigned back to bot (${assigneeEmail})`)
+      console.log(`Auto-resumed: assigned to bot (${assignedId || assigneeEmail})`)
       justResumed = true
     } else if (isAssignedToHuman) {
       // If human agent sends #resume as a message, resume bot
