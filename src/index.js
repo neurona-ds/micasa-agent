@@ -18,18 +18,23 @@ app.post('/webhook', async (req, res) => {
     console.log('Incoming webhook:', JSON.stringify(req.body, null, 2))
 
     const body = req.body
-    const customerPhone = body.waId || body.from
-    const customerName = body.senderName || null
+
+    // WATI payload structure:
+    // { waId, senderName, type, text: { body: "..." }, ... }
+    // Also sometimes wrapped in an event object
+    const data = body.data || body
+
+    const customerPhone = data.waId || data.from || body.waId || body.from
+    const customerName = data.senderName || body.senderName || null
 
     if (!customerPhone) {
+      console.log('No phone found in payload — ignoring')
       return res.status(200).json({ status: 'ignored' })
     }
 
     // Detect media/image message types from WATI
-    const messageType = body.type || body.messageType || 'text'
-    const isMediaMessage = ['image', 'document', 'audio', 'video'].includes(
-      messageType.toLowerCase()
-    )
+    const messageType = (data.type || data.messageType || body.type || 'text').toLowerCase()
+    const isMediaMessage = ['image', 'document', 'audio', 'video'].includes(messageType)
 
     // If customer sent a photo/media — treat as payment confirmation
     if (isMediaMessage) {
@@ -44,10 +49,16 @@ app.post('/webhook', async (req, res) => {
       return res.status(200).json({ status: 'media_handoff' })
     }
 
-    // Regular text message
-    const customerMessage = body.text || body.body
+    // Regular text message — WATI sends text in text.body
+    const customerMessage =
+      data.text?.body ||       // WATI standard format
+      data.text ||             // fallback
+      body.text?.body ||       // top-level fallback
+      body.body ||             // old format
+      null
 
     if (!customerMessage) {
+      console.log('No message text found — ignoring. Payload:', JSON.stringify(body))
       return res.status(200).json({ status: 'ignored' })
     }
 
