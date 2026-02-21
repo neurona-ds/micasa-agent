@@ -19,21 +19,32 @@ app.post('/webhook', async (req, res) => {
 
     const body = req.body
 
-    // WATI payload structure:
-    // { waId, senderName, type, text: { body: "..." }, ... }
-    // Also sometimes wrapped in an event object
-    const data = body.data || body
+    // WATI real webhook payload structure:
+    // {
+    //   waId: "593...",         — customer phone
+    //   senderName: "Name",
+    //   type: "text",
+    //   text: "hola",           — plain string (not an object)
+    //   owner: false,           — false = incoming from customer, true = outgoing
+    //   eventType: "message"
+    // }
 
-    const customerPhone = data.waId || data.from || body.waId || body.from
-    const customerName = data.senderName || body.senderName || null
+    // Ignore messages sent BY the bot (owner: true) to prevent infinite loops
+    if (body.owner === true) {
+      console.log('Ignoring outbound message (owner=true)')
+      return res.status(200).json({ status: 'ignored_outbound' })
+    }
+
+    const customerPhone = body.waId || body.from || null
+    const customerName = body.senderName || null
 
     if (!customerPhone) {
       console.log('No phone found in payload — ignoring')
       return res.status(200).json({ status: 'ignored' })
     }
 
-    // Detect media/image message types from WATI
-    const messageType = (data.type || data.messageType || body.type || 'text').toLowerCase()
+    // Detect media/image message types
+    const messageType = (body.type || 'text').toLowerCase()
     const isMediaMessage = ['image', 'document', 'audio', 'video'].includes(messageType)
 
     // If customer sent a photo/media — treat as payment confirmation
@@ -49,12 +60,11 @@ app.post('/webhook', async (req, res) => {
       return res.status(200).json({ status: 'media_handoff' })
     }
 
-    // Regular text message — WATI sends text in text.body
+    // Regular text message — WATI sends text as plain string
     const customerMessage =
-      data.text?.body ||       // WATI standard format
-      data.text ||             // fallback
-      body.text?.body ||       // top-level fallback
-      body.body ||             // old format
+      (typeof body.text === 'string' ? body.text : null) ||  // WATI real format
+      body.text?.body ||                                       // alternative format
+      body.body ||                                             // old format
       null
 
     if (!customerMessage) {
