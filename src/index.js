@@ -99,19 +99,20 @@ app.post('/webhook', async (req, res) => {
 // Send message via WATI
 async function sendWatiMessage(phone, message) {
   try {
-    await axios.post(
+    const response = await axios.post(
       `https://live-mt-server.wati.io/470858/api/v1/sendSessionMessage/${phone}`,
-      { messageText: message },
+      null,  // no body
       {
+        params: { messageText: message },  // WATI requires messageText as query param
         headers: {
           Authorization: process.env.WATI_API_KEY,
           'Content-Type': 'application/json'
         }
       }
     )
-    console.log(`Message sent to ${phone}`)
+    console.log(`Message sent to ${phone}:`, response.data?.result || 'ok')
   } catch (error) {
-    console.error('Error sending WATI message:', error.message)
+    console.error('Error sending WATI message:', error.response?.data || error.message)
   }
 }
 
