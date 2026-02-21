@@ -40,23 +40,19 @@ app.post('/webhook', async (req, res) => {
 
     const rawText = typeof body.text === 'string' ? body.text.trim().toLowerCase() : ''
 
-    // --- ADMIN PAUSE/RESUME COMMANDS ---
-    // Owner types #pause or #resume in WATI chat (arrives as owner=true)
-    // Must be checked BEFORE the owner filter below
+    // --- OWNER MESSAGES (sent by human operator in WATI) ---
     if (body.owner === true) {
-      if (rawText === '#pause') {
-        await pauseBot(customerPhone)
-        console.log(`Bot PAUSED for ${customerPhone} by admin`)
-        return res.status(200).json({ status: 'bot_paused' })
-      }
+      // #resume typed by operator as owner → re-enable bot for this customer
       if (rawText === '#resume') {
         await resumeBot(customerPhone)
         console.log(`Bot RESUMED for ${customerPhone} by admin`)
         return res.status(200).json({ status: 'bot_resumed' })
       }
-      // All other owner messages (bot replies) — ignore to prevent loops
-      console.log('Ignoring outbound message (owner=true)')
-      return res.status(200).json({ status: 'ignored_outbound' })
+      // Any other message sent by operator → auto-pause bot for this customer
+      // This way the operator just types normally and the bot steps aside
+      await pauseBot(customerPhone)
+      console.log(`Bot AUTO-PAUSED for ${customerPhone} — operator took over`)
+      return res.status(200).json({ status: 'operator_takeover' })
     }
 
     // Check if bot is paused for this customer (human takeover active)
