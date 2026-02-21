@@ -42,14 +42,25 @@ app.post('/webhook', async (req, res) => {
 
     // --- OWNER MESSAGES (sent by human operator in WATI) ---
     if (body.owner === true) {
-      // #resume typed by operator as owner → re-enable bot for this customer
+      // Distinguish human operator from bot:
+      // Bot messages have operatorName=null and operatorEmail=null
+      // Human operator messages have operatorName or operatorEmail set
+      const isHumanOperator = !!(body.operatorName || body.operatorEmail)
+
+      if (!isHumanOperator) {
+        // This is the bot's own reply — ignore silently
+        return res.status(200).json({ status: 'ignored_bot_reply' })
+      }
+
+      // Human operator sent a message
+      // #resume → hand back to bot
       if (rawText === '#resume') {
         await resumeBot(customerPhone)
-        console.log(`Bot RESUMED for ${customerPhone} by admin`)
+        console.log(`Bot RESUMED for ${customerPhone} by operator`)
         return res.status(200).json({ status: 'bot_resumed' })
       }
-      // Any other message sent by operator → auto-pause bot for this customer
-      // This way the operator just types normally and the bot steps aside
+
+      // Any other human operator message → auto-pause bot
       await pauseBot(customerPhone)
       console.log(`Bot AUTO-PAUSED for ${customerPhone} — operator took over`)
       return res.status(200).json({ status: 'operator_takeover' })
