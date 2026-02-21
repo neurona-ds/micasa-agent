@@ -83,11 +83,13 @@ app.post('/webhook', async (req, res) => {
       (botEmail && assigneeEmail !== botEmail)
     )
 
-    // If assigned back to bot email → auto-resume
+    let justResumed = false
+
+    // If assigned back to bot email → auto-resume and process message
     if (botEmail && assigneeEmail === botEmail) {
       await resumeBot(customerPhone)
       console.log(`Auto-resumed: assigned back to bot (${assigneeEmail})`)
-      // Fall through — let bot process this message normally
+      justResumed = true
     } else if (isAssignedToHuman) {
       // If human agent sends #resume as a message, resume bot
       if (rawText === '#resume') {
@@ -101,11 +103,13 @@ app.post('/webhook', async (req, res) => {
       return res.status(200).json({ status: 'assigned_to_human_skipped' })
     }
 
-    // Check if bot is paused for this customer (human takeover active)
-    const paused = await isBotPaused(customerPhone)
-    if (paused) {
-      console.log(`Bot is paused for ${customerPhone} — human handling this chat`)
-      return res.status(200).json({ status: 'bot_paused_skipped' })
+    // Check if bot is paused (skip check if we just resumed above)
+    if (!justResumed) {
+      const paused = await isBotPaused(customerPhone)
+      if (paused) {
+        console.log(`Bot is paused for ${customerPhone} — human handling this chat`)
+        return res.status(200).json({ status: 'bot_paused_skipped' })
+      }
     }
 
     // Rate limit: if already processing a message for this phone, ignore
