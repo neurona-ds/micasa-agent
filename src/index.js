@@ -3,6 +3,7 @@ require('dotenv').config({ path: path.resolve(__dirname, '../.env'), override: t
 const express = require('express')
 const axios = require('axios')
 const { processMessage } = require('./agent')
+const { isBotPaused, pauseBot, resumeBot } = require('./memory')
 
 const app = express()
 app.use(express.json())
@@ -29,18 +30,40 @@ app.post('/webhook', async (req, res) => {
     //   eventType: "message"
     // }
 
-    // Ignore messages sent BY the bot (owner: true) to prevent infinite loops
-    if (body.owner === true) {
-      console.log('Ignoring outbound message (owner=true)')
-      return res.status(200).json({ status: 'ignored_outbound' })
-    }
-
     const customerPhone = body.waId || body.from || null
     const customerName = body.senderName || null
 
     if (!customerPhone) {
       console.log('No phone found in payload — ignoring')
       return res.status(200).json({ status: 'ignored' })
+    }
+
+    const rawText = typeof body.text === 'string' ? body.text.trim().toLowerCase() : ''
+
+    // --- ADMIN PAUSE/RESUME COMMANDS ---
+    // Owner types #pause or #resume in WATI chat (arrives as owner=true)
+    // Must be checked BEFORE the owner filter below
+    if (body.owner === true) {
+      if (rawText === '#pause') {
+        await pauseBot(customerPhone)
+        console.log(`Bot PAUSED for ${customerPhone} by admin`)
+        return res.status(200).json({ status: 'bot_paused' })
+      }
+      if (rawText === '#resume') {
+        await resumeBot(customerPhone)
+        console.log(`Bot RESUMED for ${customerPhone} by admin`)
+        return res.status(200).json({ status: 'bot_resumed' })
+      }
+      // All other owner messages (bot replies) — ignore to prevent loops
+      console.log('Ignoring outbound message (owner=true)')
+      return res.status(200).json({ status: 'ignored_outbound' })
+    }
+
+    // Check if bot is paused for this customer (human takeover active)
+    const paused = await isBotPaused(customerPhone)
+    if (paused) {
+      console.log(`Bot is paused for ${customerPhone} — human handling this chat`)
+      return res.status(200).json({ status: 'bot_paused_skipped' })
     }
 
     // Detect media/image message types

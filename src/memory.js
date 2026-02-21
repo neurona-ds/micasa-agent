@@ -223,6 +223,38 @@ async function getPaymentMethods() {
   return data
 }
 
+// Check if bot is paused for a customer
+async function isBotPaused(phone) {
+  const { data, error } = await supabase
+    .from('customers')
+    .select('bot_paused')
+    .eq('phone', phone)
+    .single()
+
+  if (error || !data) return false
+  return data.bot_paused === true
+}
+
+// Pause bot for a customer (human takeover)
+async function pauseBot(phone) {
+  const { error } = await supabase
+    .from('customers')
+    .update({ bot_paused: true })
+    .eq('phone', phone)
+
+  if (error) console.error('Error pausing bot:', error)
+}
+
+// Resume bot for a customer
+async function resumeBot(phone) {
+  const { error } = await supabase
+    .from('customers')
+    .update({ bot_paused: false })
+    .eq('phone', phone)
+
+  if (error) console.error('Error resuming bot:', error)
+}
+
 module.exports = {
   saveMessage,
   getHistory,
@@ -235,5 +267,8 @@ module.exports = {
   getDeliveryTiers,
   advanceCycleIfNeeded,
   getWeekAlmuerzos,
-  getPaymentMethods
+  getPaymentMethods,
+  isBotPaused,
+  pauseBot,
+  resumeBot
 }
