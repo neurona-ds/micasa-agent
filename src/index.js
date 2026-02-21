@@ -40,45 +40,29 @@ app.post('/webhook', async (req, res) => {
 
     const rawText = typeof body.text === 'string' ? body.text.trim().toLowerCase() : ''
 
-    // --- OWNER MESSAGES (sent by human operator in WATI) ---
+    // --- OWNER MESSAGES (outgoing — sent by bot API or human operator in WATI) ---
     if (body.owner === true) {
-      // Debug: log all owner message fields so we can see exactly what WATI sends
-      console.log('OWNER MESSAGE fields:', JSON.stringify({
-        operatorName: body.operatorName,
-        operatorEmail: body.operatorEmail,
-        assignedId: body.assignedId,
-        senderName: body.senderName,
-        eventType: body.eventType,
-        text: body.text
-      }))
+      // Since both bot and human share the same WATI account,
+      // we can't distinguish them by email/name.
+      // Use explicit commands typed by the operator:
+      //   #pause  → pause the bot for this customer
+      //   #resume → resume the bot for this customer
+      // All other owner messages (including bot replies) are silently ignored.
 
-      // Strategy 1: BOT_EMAIL env var — if set, messages from that email are bot replies
-      const botEmail = process.env.WATI_BOT_EMAIL
-      if (botEmail && body.operatorEmail === botEmail) {
-        console.log('Ignoring bot reply (matched WATI_BOT_EMAIL)')
-        return res.status(200).json({ status: 'ignored_bot_reply' })
+      if (rawText === '#pause') {
+        await pauseBot(customerPhone)
+        console.log(`Bot PAUSED for ${customerPhone} by operator command`)
+        return res.status(200).json({ status: 'bot_paused' })
       }
 
-      // Strategy 2: null/empty operatorName AND null/empty operatorEmail = bot reply
-      const hasOperatorIdentity = !!(body.operatorName || body.operatorEmail)
-      if (!hasOperatorIdentity) {
-        // This is the bot's own reply — ignore silently
-        console.log('Ignoring bot reply (no operatorName/operatorEmail)')
-        return res.status(200).json({ status: 'ignored_bot_reply' })
-      }
-
-      // Human operator sent a message
-      // #resume → hand back to bot
       if (rawText === '#resume') {
         await resumeBot(customerPhone)
-        console.log(`Bot RESUMED for ${customerPhone} by operator (${body.operatorEmail || body.operatorName})`)
+        console.log(`Bot RESUMED for ${customerPhone} by operator command`)
         return res.status(200).json({ status: 'bot_resumed' })
       }
 
-      // Any other human operator message → auto-pause bot
-      await pauseBot(customerPhone)
-      console.log(`Bot AUTO-PAUSED for ${customerPhone} — operator took over (${body.operatorEmail || body.operatorName})`)
-      return res.status(200).json({ status: 'operator_takeover' })
+      // Everything else (bot replies, operator messages) — ignore silently
+      return res.status(200).json({ status: 'ignored_owner_message' })
     }
 
     // Check if bot is paused for this customer (human takeover active)
