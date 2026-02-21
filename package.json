@@ -1,0 +1,18 @@
+{
+  "name": "restaurant-agent",
+  "version": "1.0.0",
+  "description": "Micasa Restaurante WhatsApp AI Sales Agent",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test-chat": "node test-chat.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@supabase/supabase-js": "^2.49.1",
+    "axios": "^1.8.1",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2"
+  }
+}
