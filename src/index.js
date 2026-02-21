@@ -71,9 +71,19 @@ app.post('/webhook', async (req, res) => {
 
     // WATI sets operatorEmail to the assignee on ALL messages (owner:false included).
     const humanEmail = (process.env.WATI_HUMAN_EMAIL || '').toLowerCase()
+    const botEmail = (process.env.WATI_BOT_EMAIL || '').toLowerCase()
     const assigneeEmail = (body.operatorEmail || '').toLowerCase()
 
-    if (humanEmail && assigneeEmail === humanEmail) {
+    console.log(`assigneeEmail=${assigneeEmail} humanEmail=${humanEmail} botEmail=${botEmail}`)
+
+    // Block bot if assigned to human agent.
+    // Match by WATI_HUMAN_EMAIL env var, OR if assigneeEmail is set and is NOT the bot email.
+    const isAssignedToHuman = assigneeEmail && (
+      (humanEmail && assigneeEmail === humanEmail) ||
+      (botEmail && assigneeEmail !== botEmail)
+    )
+
+    if (isAssignedToHuman) {
       // If human agent sends #resume as a message, unassign and resume bot
       if (rawText === '#resume') {
         await resumeBot(customerPhone)
