@@ -8,24 +8,10 @@ const { isBotPaused, pauseBot, resumeBot } = require('./memory')
 const app = express()
 app.use(express.json())
 
-// In-memory deduplication: track recently processed messages to prevent loops
-// Key: "phone:text:timestamp_bucket", Value: true
-const recentMessages = new Map()
-function isDuplicate(phone, text) {
-  // 5-second bucket — same phone+text within 5s = duplicate
-  const bucket = Math.floor(Date.now() / 5000)
-  const key = `${phone}:${text}:${bucket}`
-  if (recentMessages.has(key)) return true
-  recentMessages.set(key, true)
-  // Clean up old entries every 100 inserts
-  if (recentMessages.size > 100) {
-    const oldBucket = bucket - 2
-    for (const k of recentMessages.keys()) {
-      if (k.endsWith(`:${oldBucket}`)) recentMessages.delete(k)
-    }
-  }
-  return false
-}
+// Rate limit: only process one message per phone number at a time
+// Prevents loops when WATI fires multiple webhooks for the same conversation
+const processingPhones = new Set()
+const lastProcessed = new Map() // phone -> timestamp
 
 // Health check endpoint
 app.get('/', (req, res) => {
@@ -71,26 +57,24 @@ app.post('/webhook', async (req, res) => {
 
     // --- OWNER MESSAGES (outgoing — sent by bot API or human operator in WATI) ---
     if (body.owner === true) {
-      // Since both bot and human share the same WATI account,
-      // we can't distinguish them by email/name.
-      // Use explicit commands typed by the operator:
-      //   #pause  → pause the bot for this customer
-      //   #resume → resume the bot for this customer
-      // All other owner messages (including bot replies) are silently ignored.
+      const operatorEmail = (body.operatorEmail || '').toLowerCase()
+      const botEmail = (process.env.WATI_BOT_EMAIL || '').toLowerCase()
+      const humanEmail = (process.env.WATI_HUMAN_EMAIL || '').toLowerCase()
 
-      if (rawText === '#pause') {
+      // If it's the human agent email → pause bot + handle #resume
+      if (humanEmail && operatorEmail === humanEmail) {
+        if (rawText === '#resume') {
+          await resumeBot(customerPhone)
+          console.log(`Bot RESUMED for ${customerPhone} by human agent`)
+          return res.status(200).json({ status: 'bot_resumed' })
+        }
         await pauseBot(customerPhone)
-        console.log(`Bot PAUSED for ${customerPhone} by operator command`)
-        return res.status(200).json({ status: 'bot_paused' })
+        console.log(`Bot AUTO-PAUSED for ${customerPhone} — human agent took over`)
+        return res.status(200).json({ status: 'operator_takeover' })
       }
 
-      if (rawText === '#resume') {
-        await resumeBot(customerPhone)
-        console.log(`Bot RESUMED for ${customerPhone} by operator command`)
-        return res.status(200).json({ status: 'bot_resumed' })
-      }
-
-      // Everything else (bot replies, operator messages) — ignore silently
+      // Bot email or anything else → ignore silently
+      console.log(`Ignoring owner message from: ${operatorEmail || 'bot'}`)
       return res.status(200).json({ status: 'ignored_owner_message' })
     }
 
@@ -101,10 +85,18 @@ app.post('/webhook', async (req, res) => {
       return res.status(200).json({ status: 'bot_paused_skipped' })
     }
 
-    // Deduplication guard — prevent processing the same message twice within 5 seconds
-    if (isDuplicate(customerPhone, rawText)) {
-      console.log(`Duplicate message detected for ${customerPhone} — ignoring`)
-      return res.status(200).json({ status: 'duplicate_ignored' })
+    // Rate limit: if already processing a message for this phone, ignore
+    if (processingPhones.has(customerPhone)) {
+      console.log(`Already processing message for ${customerPhone} — ignoring`)
+      return res.status(200).json({ status: 'rate_limited' })
+    }
+
+    // Rate limit: enforce minimum 8 seconds between messages per phone
+    const last = lastProcessed.get(customerPhone) || 0
+    const elapsed = Date.now() - last
+    if (elapsed < 8000) {
+      console.log(`Too soon for ${customerPhone} (${elapsed}ms since last) — ignoring`)
+      return res.status(200).json({ status: 'rate_limited' })
     }
 
     // Detect media/image message types
@@ -136,11 +128,20 @@ app.post('/webhook', async (req, res) => {
       return res.status(200).json({ status: 'ignored' })
     }
 
-    const { reply, needsHandoff, needsPaymentHandoff } = await processMessage(
-      customerPhone,
-      customerMessage,
-      customerName
-    )
+    // Mark as processing — block any concurrent webhook for this phone
+    processingPhones.add(customerPhone)
+    lastProcessed.set(customerPhone, Date.now())
+
+    let reply, needsHandoff, needsPaymentHandoff
+    try {
+      ;({ reply, needsHandoff, needsPaymentHandoff } = await processMessage(
+        customerPhone,
+        customerMessage,
+        customerName
+      ))
+    } finally {
+      processingPhones.delete(customerPhone)
+    }
 
     // Send reply to customer
     await sendWatiMessage(customerPhone, reply)
