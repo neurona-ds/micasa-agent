@@ -23,17 +23,8 @@ app.post('/webhook', async (req, res) => {
   try {
     const body = req.body
 
-    // Log key fields only (not full body to keep logs clean)
-    console.log('Webhook received:', JSON.stringify({
-      waId: body.waId,
-      senderName: body.senderName,
-      type: body.type,
-      owner: body.owner,
-      eventType: body.eventType,
-      text: typeof body.text === 'string' ? body.text.substring(0, 80) : body.text,
-      operatorName: body.operatorName,
-      operatorEmail: body.operatorEmail
-    }))
+    // Log full body so we can see every field WATI sends
+    console.log('Webhook received:', JSON.stringify(body))
 
     // WATI real webhook payload structure:
     // {
@@ -76,6 +67,23 @@ app.post('/webhook', async (req, res) => {
       // Bot email or anything else → ignore silently
       console.log(`Ignoring owner message from: ${operatorEmail || 'bot'}`)
       return res.status(200).json({ status: 'ignored_owner_message' })
+    }
+
+    // Auto-pause if conversation is assigned to the human agent
+    // WATI includes assignedTo/assignedAgent fields on incoming messages
+    const humanEmail = (process.env.WATI_HUMAN_EMAIL || '').toLowerCase()
+    const assignedTo = (
+      body.assignedTo ||
+      body.assignedAgent ||
+      body.operatorEmail ||
+      body.assignee ||
+      ''
+    ).toLowerCase()
+
+    if (humanEmail && assignedTo === humanEmail) {
+      await pauseBot(customerPhone)
+      console.log(`Auto-paused: conversation assigned to human agent (${assignedTo})`)
+      return res.status(200).json({ status: 'assigned_to_human_skipped' })
     }
 
     // Check if bot is paused for this customer (human takeover active)
