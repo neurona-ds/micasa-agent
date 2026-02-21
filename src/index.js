@@ -8,6 +8,25 @@ const { isBotPaused, pauseBot, resumeBot } = require('./memory')
 const app = express()
 app.use(express.json())
 
+// In-memory deduplication: track recently processed messages to prevent loops
+// Key: "phone:text:timestamp_bucket", Value: true
+const recentMessages = new Map()
+function isDuplicate(phone, text) {
+  // 5-second bucket — same phone+text within 5s = duplicate
+  const bucket = Math.floor(Date.now() / 5000)
+  const key = `${phone}:${text}:${bucket}`
+  if (recentMessages.has(key)) return true
+  recentMessages.set(key, true)
+  // Clean up old entries every 100 inserts
+  if (recentMessages.size > 100) {
+    const oldBucket = bucket - 2
+    for (const k of recentMessages.keys()) {
+      if (k.endsWith(`:${oldBucket}`)) recentMessages.delete(k)
+    }
+  }
+  return false
+}
+
 // Health check endpoint
 app.get('/', (req, res) => {
   res.json({ status: 'Micasa Restaurante Agent is running!' })
@@ -16,9 +35,19 @@ app.get('/', (req, res) => {
 // Webhook endpoint - WATI sends messages here
 app.post('/webhook', async (req, res) => {
   try {
-    console.log('Incoming webhook:', JSON.stringify(req.body, null, 2))
-
     const body = req.body
+
+    // Log key fields only (not full body to keep logs clean)
+    console.log('Webhook received:', JSON.stringify({
+      waId: body.waId,
+      senderName: body.senderName,
+      type: body.type,
+      owner: body.owner,
+      eventType: body.eventType,
+      text: typeof body.text === 'string' ? body.text.substring(0, 80) : body.text,
+      operatorName: body.operatorName,
+      operatorEmail: body.operatorEmail
+    }))
 
     // WATI real webhook payload structure:
     // {
@@ -70,6 +99,12 @@ app.post('/webhook', async (req, res) => {
     if (paused) {
       console.log(`Bot is paused for ${customerPhone} — human handling this chat`)
       return res.status(200).json({ status: 'bot_paused_skipped' })
+    }
+
+    // Deduplication guard — prevent processing the same message twice within 5 seconds
+    if (isDuplicate(customerPhone, rawText)) {
+      console.log(`Duplicate message detected for ${customerPhone} — ignoring`)
+      return res.status(200).json({ status: 'duplicate_ignored' })
     }
 
     // Detect media/image message types
