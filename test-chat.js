@@ -31,7 +31,7 @@ function prompt() {
         TEST_NAME
       )
 
-      console.log(`\nSofia: ${reply}`)
+      console.log(`\nFabian: ${reply}`)
 
       if (needsPaymentHandoff) {
         console.log('  ⚡ [HANDOFF_PAYMENT triggered — would route to human agent]')
