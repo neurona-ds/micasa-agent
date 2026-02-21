@@ -69,20 +69,20 @@ app.post('/webhook', async (req, res) => {
       return res.status(200).json({ status: 'ignored_owner_message' })
     }
 
-    // Auto-pause if conversation is assigned to the human agent
-    // WATI includes assignedTo/assignedAgent fields on incoming messages
+    // WATI sets operatorEmail to the assignee on ALL messages (owner:false included).
     const humanEmail = (process.env.WATI_HUMAN_EMAIL || '').toLowerCase()
-    const assignedTo = (
-      body.assignedTo ||
-      body.assignedAgent ||
-      body.operatorEmail ||
-      body.assignee ||
-      ''
-    ).toLowerCase()
+    const assigneeEmail = (body.operatorEmail || '').toLowerCase()
 
-    if (humanEmail && assignedTo === humanEmail) {
+    if (humanEmail && assigneeEmail === humanEmail) {
+      // If human agent sends #resume as a message, unassign and resume bot
+      if (rawText === '#resume') {
+        await resumeBot(customerPhone)
+        console.log(`Bot RESUMED for ${customerPhone} by human agent`)
+        return res.status(200).json({ status: 'bot_resumed' })
+      }
+      // Otherwise block bot and let human handle it
       await pauseBot(customerPhone)
-      console.log(`Auto-paused: conversation assigned to human agent (${assignedTo})`)
+      console.log(`Auto-paused: assigned to human agent (${assigneeEmail})`)
       return res.status(200).json({ status: 'assigned_to_human_skipped' })
     }
 
