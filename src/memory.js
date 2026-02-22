@@ -1,6 +1,7 @@
 const path = require('path')
 require('dotenv').config({ path: path.resolve(__dirname, '../.env'), override: true })
 const { createClient } = require('@supabase/supabase-js')
+const axios = require('axios')
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -224,6 +225,66 @@ async function getPaymentMethods() {
   return data
 }
 
+// Restaurant coordinates (América y Juan José de Villalengua, Quito) — from Google Maps pin
+const RESTAURANT_LAT = -0.1723433
+const RESTAURANT_LNG = -78.4910016
+
+// Calculate delivery zone from a free-text customer address using Google Maps Geocoding + Haversine
+async function getDeliveryZoneByAddress(customerAddress) {
+  try {
+    const apiKey = process.env.GOOGLE_MAPS_API_KEY
+    if (!apiKey) {
+      console.warn('GOOGLE_MAPS_API_KEY not set — cannot calculate delivery zone')
+      return null
+    }
+
+    // Geocode the customer address, biased to Quito Ecuador
+    const geocodeResponse = await axios.get('https://maps.googleapis.com/maps/api/geocode/json', {
+      params: {
+        address: `${customerAddress}, Quito, Ecuador`,
+        key: apiKey,
+        region: 'ec',
+        language: 'es'
+      },
+      timeout: 5000
+    })
+
+    const geocodeData = geocodeResponse.data
+    if (!geocodeData || geocodeData.status !== 'OK' || !geocodeData.results?.length) {
+      console.warn(`Geocoding failed for "${customerAddress}": status=${geocodeData?.status}`)
+      return null
+    }
+
+    const { lat: customerLat, lng: customerLng } = geocodeData.results[0].geometry.location
+    const formattedAddress = geocodeData.results[0].formatted_address
+
+    // Haversine formula — straight-line distance in km
+    const R = 6371
+    const dLat = ((customerLat - RESTAURANT_LAT) * Math.PI) / 180
+    const dLng = ((customerLng - RESTAURANT_LNG) * Math.PI) / 180
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos((RESTAURANT_LAT * Math.PI) / 180) *
+      Math.cos((customerLat * Math.PI) / 180) *
+      Math.sin(dLng / 2) * Math.sin(dLng / 2)
+    const distanceKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+
+    // Assign zone based on distance brackets
+    let zone
+    if (distanceKm <= 2) zone = 1
+    else if (distanceKm <= 4) zone = 2
+    else if (distanceKm <= 6) zone = 3
+    else zone = 4
+
+    console.log(`Zone calc: "${customerAddress}" → ${formattedAddress} | ${distanceKm.toFixed(2)}km → Zone ${zone}`)
+
+    return { zone, distanceKm: parseFloat(distanceKm.toFixed(2)), formattedAddress }
+  } catch (err) {
+    console.error('Error in getDeliveryZoneByAddress:', err.message)
+    return null
+  }
+}
+
 // Check if bot is paused for a customer
 async function isBotPaused(phone) {
   const { data, error } = await supabase
@@ -266,6 +327,7 @@ module.exports = {
   getProducts,
   getDeliveryZones,
   getDeliveryTiers,
+  getDeliveryZoneByAddress,
   advanceCycleIfNeeded,
   getWeekAlmuerzos,
   getPaymentMethods,

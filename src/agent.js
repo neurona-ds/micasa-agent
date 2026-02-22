@@ -1,5 +1,5 @@
 const Anthropic = require('@anthropic-ai/sdk')
-const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, advanceCycleIfNeeded, getWeekAlmuerzos, getPaymentMethods } = require('./memory')
+const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getDeliveryZoneByAddress, advanceCycleIfNeeded, getWeekAlmuerzos, getPaymentMethods } = require('./memory')
 const path = require('path')
 require('dotenv').config({ path: path.resolve(__dirname, '../.env'), override: true })
 
@@ -333,8 +333,28 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       return acc
     }, [])
 
-    // Append the new user message
-    messages.push({ role: 'user', content: customerMessage })
+    // Detect if customer is responding to an address request → call Maps API for zone
+    const lastBotMsg = [...history].reverse().find(h => h.role === 'assistant')
+    const lastBotAskedAddress = lastBotMsg && (
+      lastBotMsg.message.includes('dirección completa') ||
+      lastBotMsg.message.includes('📍')
+    )
+
+    let enrichedMessage = customerMessage
+    if (lastBotAskedAddress) {
+      console.log(`Address response detected — calling Google Maps for zone`)
+      const zoneResult = await getDeliveryZoneByAddress(customerMessage)
+      if (zoneResult) {
+        const { zone, distanceKm, formattedAddress } = zoneResult
+        enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección geocodificada → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. Usar esta zona para calcular el costo de envío según la tabla de tiers. NO mencionar zona al cliente.]`
+        console.log(`Zone injected: Zone ${zone} (${distanceKm}km)`)
+      } else {
+        console.warn(`Zone calculation failed — Claude will estimate from address text`)
+      }
+    }
+
+    // Append the (possibly zone-enriched) user message
+    messages.push({ role: 'user', content: enrichedMessage })
 
     // Deterministic override: if recent bot asked delivery/local and customer says consumo en local → close immediately
     const recentBotMsgs = [...history].slice(-4).filter(h => h.role === 'assistant')
