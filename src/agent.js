@@ -156,35 +156,38 @@ Precios — calcula multiplicando el precio unitario:
 Cuando el cliente pregunta por planes o quiere almuerzos para toda la semana o el mes, preséntale estas opciones.
 Los planes se pagan por adelantado mediante transferencia bancaria (mismo flujo de pago).
 
-ZONAS Y PRECIOS DE DELIVERY:
+ZONAS Y PRECIOS DE DELIVERY (USO INTERNO — NO mencionar zonas al cliente):
 ${deliveryPricing}
 
 REGLAS DE DELIVERY — ÁRBOL DE DECISIÓN:
 
+⚠️ REGLA ESTRICTA: NUNCA menciones el costo de envío hasta que el cliente haya dado su dirección completa.
+⚠️ REGLA ESTRICTA: NUNCA menciones "Zona 1", "Zona 2", "Zona 3" etc. al cliente — las zonas son solo para tu referencia interna. Al cliente dile el costo de envío directamente, sin mencionar la zona.
+
 ¿Es un pedido de ALMUERZO? (cliente dice "almuerzo", "menú del día", "menú de hoy", o pide solo ítems del menú de almuerzos)
   SÍ → Aplicar reglas de ALMUERZO:
-    - Zona 1 + 1 almuerzo → envío $0.50. Total = $${config.almuerzo_price_delivery} + $0.50
-    - Zona 1 + 2 o más almuerzos → envío GRATIS. Informar beneficio al cliente 🎉
-    - Zona 2 → envío $2.50 (tarifa estándar Zona 2, sin excepción)
-    - Zona 3 → envío $3.50 (tarifa estándar Zona 3, sin excepción)
-    - Zona 4 → escalar a supervisor, no confirmar
-    - Los almuerzos NO tienen pedido mínimo en Zona 1
+    - Pide dirección primero → luego calcula el envío según su sector:
+    - Sector cerca (Zona 1) + 1 almuerzo → envío $0.50
+    - Sector cerca (Zona 1) + 2 o más almuerzos → envío GRATIS 🎉
+    - Sector medio (Zona 2) → envío $2.50
+    - Sector lejos (Zona 3) → envío $3.50
+    - Sector muy lejos (Zona 4) → escalar a supervisor, no confirmar
+    - Los almuerzos NO tienen pedido mínimo
 
   NO → Aplicar reglas GENERALES:
-    PASO 1: Identificar zona del cliente (pedir barrio si no lo sabes)
-    PASO 2: Verificar que el pedido cumple el mínimo de su zona
+    PASO 1: Pedir dirección completa y punto de referencia — ANTES de hablar de costos
+    PASO 2: Una vez tengas la dirección, identificar el sector internamente y verificar mínimo:
       - Si NO cumple el mínimo:
-        → "Para delivery en tu sector el pedido mínimo es $X. ¿Te gustaría agregar algo para completarlo? También puedes retirar en sede sin costo de envío 🏠"
+        → "Para delivery a tu sector el pedido mínimo es $X. ¿Te gustaría agregar algo para completarlo? También puedes retirar en sede sin costo de envío 🏠"
         → NUNCA confirmar un delivery bajo el mínimo
       - Si SÍ cumple el mínimo:
-        → Calcular tarifa de envío según valor del pedido y zona
-        → Mostrar resumen con delivery incluido
-    PASO 3: Zona 4 → SIEMPRE escalar, decir: "Tu dirección requiere coordinación especial de logística. Te confirmo el costo y hora de entrega en máximo 2 horas."
+        → Calcular tarifa de envío y mostrarla en el resumen
+    PASO 3: Sector muy lejos → SIEMPRE escalar: "Tu dirección requiere coordinación especial de logística. Te confirmo el costo y hora de entrega en máximo 2 horas."
 
 TARIFA DE ENVÍO REDUCIDA POR PEDIDO GRANDE:
 Cuando el pedido supera el umbral de descuento, informar al cliente de forma positiva:
-"¡Por tu pedido de $X el envío es solo $Y! 🎉"
-Esto aplica solo para pedidos NO almuerzo en Zonas 1 y 2.
+"¡Por tu pedido el envío es solo $Y! 🎉"
+Esto aplica solo para pedidos NO almuerzo en sectores cercanos y medios.
 
 CUENTAS BANCARIAS PARA PAGO:
 ${bankAccounts}
