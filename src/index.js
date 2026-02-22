@@ -174,7 +174,19 @@ app.post('/webhook', async (req, res) => {
     }
 
     // Send reply to customer
-    await sendWatiMessage(customerPhone, reply)
+    // Payment messages are split into two: bank accounts + follow-up instructions
+    const PAYMENT_SPLIT_MARKERS = ['Una vez realices la transferencia', 'Una vez hecho el pago', 'Una vez realizada la transferencia']
+    const splitMarker = PAYMENT_SPLIT_MARKERS.find(m => reply.includes(m))
+    if (splitMarker) {
+      const splitIdx = reply.indexOf(splitMarker)
+      const msg1 = reply.substring(0, splitIdx).trim()
+      const msg2 = reply.substring(splitIdx).trim()
+      await sendWatiMessage(customerPhone, msg1)
+      await new Promise(r => setTimeout(r, 1000)) // 1s pause between messages
+      await sendWatiMessage(customerPhone, msg2)
+    } else {
+      await sendWatiMessage(customerPhone, reply)
+    }
 
     // Handle handoff notifications
     if (needsPaymentHandoff) {
