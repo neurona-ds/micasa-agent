@@ -66,7 +66,7 @@ function formatWeekAlmuerzos(weekAlmuerzos, config) {
   const priceDelivery = config.almuerzo_price_delivery
   const priceInstore = config.almuerzo_price_instore
 
-  const header = `Incluye: ${includes} | Delivery: $${priceDelivery} | En local: $${priceInstore}`
+  const header = `Incluye: ${includes} | Precio en local: $${priceInstore} | Precio con retiro/delivery: $${priceDelivery} (+ costo de envío según zona)`
 
   if (!weekAlmuerzos || weekAlmuerzos.length === 0) {
     return `${header}\n(Menú de almuerzos no disponible)`
@@ -238,7 +238,11 @@ c) Si es DELIVERY:
    - Si NO tienes dirección → pide dirección completa y punto de referencia.
    - Identifica la zona, calcula el costo de envío.
 d) Muestra resumen completo: ítems + precios + subtotal + costo de envío + TOTAL.
-   NUNCA uses la frase "delivery incluido" — siempre muestra el costo de envío como un ítem separado con su valor (ej: "Envío: $1.50"). Si el envío es gratis, di "Envío: GRATIS 🎉".
+   ⚠️ PROHIBIDO usar "delivery incluido", "con delivery", "precio con envío" o cualquier frase que sugiera que el delivery está incluido en el precio del plato.
+   El costo de envío es SIEMPRE un cargo adicional y separado. Muéstralo así:
+   "Envío: $1.50" — si tiene costo
+   "Envío: GRATIS 🎉" — si es gratuito
+   El precio del almuerzo ($5.50 delivery / $4.90 en local) es el precio del almuerzo. El envío se cobra aparte según la zona.
 e) Pregunta exactamente: "¿Confirmas tu pedido?" — espera respuesta.
 f) ⚠️ CRÍTICO: Cuando el cliente confirma (dice "sí", "si", "confirmo", "dale", "ok", "listo" o similar después del resumen) → IR INMEDIATAMENTE AL PASO 4. PROHIBIDO pedir dirección, zona, o cualquier dato adicional.
 
