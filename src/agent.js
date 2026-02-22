@@ -333,22 +333,36 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     // Append the new user message
     messages.push({ role: 'user', content: customerMessage })
 
-    // Deterministic override: if any recent bot message had "Confirmas tu pedido" and customer says yes → force payment step
+    // Deterministic override: if any recent bot message had "Confirmas tu pedido" and customer says yes → bypass Claude and send payment directly
     const AFFIRMATIVES = ['si', 'sí', 'confirmo', 'dale', 'ok', 'listo', 'va', 'perfecto', 'claro', 'yes', 'bueno', 'adelante', 'de acuerdo']
-    const recentHistory = [...history].slice(-6) // last 6 messages
+    const recentHistory = [...history].slice(-8) // last 8 messages — wide enough to catch the confirmation prompt
     const recentAssistantMsgs = recentHistory.filter(h => h.role === 'assistant')
-    const hadConfirmationPrompt = recentAssistantMsgs.some(m => m.message.includes('Confirmas tu pedido'))
+    // Find the most recent assistant message that asked for confirmation (and contained the order summary)
+    const confirmationMsg = [...recentAssistantMsgs].reverse().find(m => m.message.includes('Confirmas tu pedido'))
+    const hadConfirmationPrompt = !!confirmationMsg
     const customerMsgNorm = customerMessage.trim().toLowerCase().replace(/[¡!¿?.,]/g, '').trim()
     const isAffirmative = AFFIRMATIVES.some(a => customerMsgNorm === a || customerMsgNorm.startsWith(a + ' '))
     const isConfirmation = hadConfirmationPrompt && isAffirmative
 
     if (isConfirmation) {
-      // Inject a strong override instruction as the last user message context
-      messages[messages.length - 1] = {
-        role: 'user',
-        content: `${customerMessage}\n\n[SISTEMA: El cliente acaba de confirmar su pedido. VE DIRECTAMENTE AL PASO 4. Envía las cuentas bancarias con el monto total del resumen anterior. PROHIBIDO hacer cualquier otra pregunta.]`
+      console.log('Order confirmation detected — BYPASSING Claude, sending payment directly')
+
+      // Extract total from the confirmation message (looks for patterns like "TOTAL: $X" or "Total: $X")
+      const totalMatch = confirmationMsg.message.match(/TOTAL[:\s*]+\$?([\d,.]+)/i)
+      const totalAmount = totalMatch ? `$${totalMatch[1]}` : '(ver resumen arriba)'
+
+      // Build payment reply directly without calling Claude
+      const bankInfo = formatPaymentMethods(paymentMethods)
+      const paymentReply = `¡Perfecto! Tu pedido está confirmado 🎉\n\nAquí están los datos para tu transferencia:\n\n${bankInfo}\n\n*Monto a transferir: ${totalAmount}*\n\nUna vez realices la transferencia, envíanos la captura del comprobante para procesar tu pedido. ¡Gracias por confiar en nosotros! 💛`
+
+      await saveMessage(customerPhone, 'user', customerMessage)
+      await saveMessage(customerPhone, 'assistant', paymentReply)
+
+      return {
+        reply: paymentReply,
+        needsHandoff: false,
+        needsPaymentHandoff: false
       }
-      console.log('Order confirmation detected — injecting payment override')
     }
 
     // Call Claude

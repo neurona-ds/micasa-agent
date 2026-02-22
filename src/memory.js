@@ -16,21 +16,22 @@ async function saveMessage(customerPhone, role, message) {
   if (error) console.error('Error saving message:', error)
 }
 
-// Get last 10 messages for a customer
+// Get last 20 messages for a customer (newest first, then reversed to chronological order)
 async function getHistory(customerPhone) {
   const { data, error } = await supabase
     .from('conversations')
     .select('role, message')
     .eq('customer_phone', customerPhone)
-    .order('timestamp', { ascending: true })
-    .limit(10)
+    .order('timestamp', { ascending: false })
+    .limit(20)
 
   if (error) {
     console.error('Error fetching history:', error)
     return []
   }
 
-  return data
+  // Reverse so messages are in chronological order (oldest → newest)
+  return (data || []).reverse()
 }
 
 // Save or update customer info
