@@ -162,15 +162,40 @@ app.post('/webhook', async (req, res) => {
     processingPhones.add(customerPhone)
     lastProcessed.set(customerPhone, Date.now())
 
+    // Deterministic override: weekend almuerzo ORDER → immediate HANDOFF (no Claude call needed)
+    const dow = new Date().getDay() // 0=Sun, 6=Sat
+    const isWeekend = dow === 0 || dow === 6
+    const msgLower = customerMessage.toLowerCase()
+    const mentionsAlmuerzo = msgLower.includes('almuerzo') || msgLower.includes('almuerzos')
+    const mentionsOrder = (
+      msgLower.includes('quiero') || msgLower.includes('pedir') || msgLower.includes('pedido') ||
+      msgLower.includes('dame') || msgLower.includes('me das') || msgLower.includes('ordenar') ||
+      msgLower.includes('hoy') || msgLower.includes('domicilio') || msgLower.includes('delivery') ||
+      /^\d+/.test(msgLower.trim()) // starts with a number e.g. "2 almuerzos"
+    )
+    const isAlmuerzoOrderOnWeekend = isWeekend && mentionsAlmuerzo && mentionsOrder
+
     let reply, needsHandoff, needsPaymentHandoff
-    try {
-      ;({ reply, needsHandoff, needsPaymentHandoff } = await processMessage(
-        customerPhone,
-        customerMessage,
-        customerName
-      ))
-    } finally {
+    if (isAlmuerzoOrderOnWeekend) {
+      console.log(`Weekend almuerzo order detected — bypassing Claude, sending HANDOFF`)
+      reply = '¡Con gusto! En un momento te confirmamos el menú del día y los detalles de tu pedido. 😊'
+      needsHandoff = true
+      needsPaymentHandoff = false
       processingPhones.delete(customerPhone)
+      // Save messages to history
+      const { saveMessage } = require('./memory')
+      await saveMessage(customerPhone, 'user', customerMessage)
+      await saveMessage(customerPhone, 'assistant', reply)
+    } else {
+      try {
+        ;({ reply, needsHandoff, needsPaymentHandoff } = await processMessage(
+          customerPhone,
+          customerMessage,
+          customerName
+        ))
+      } finally {
+        processingPhones.delete(customerPhone)
+      }
     }
 
     // Send reply to customer
