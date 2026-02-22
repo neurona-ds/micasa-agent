@@ -333,6 +333,23 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     // Append the new user message
     messages.push({ role: 'user', content: customerMessage })
 
+    // Deterministic override: if last bot message had "¿Confirmas tu pedido?" and customer says yes → force payment step
+    const AFFIRMATIVES = ['si', 'sí', 'confirmo', 'dale', 'ok', 'listo', 'va', 'perfecto', 'claro', 'yes', 'bueno', 'adelante', 'de acuerdo']
+    const lastAssistantMsg = [...history].reverse().find(h => h.role === 'assistant')
+    const customerMsgNorm = customerMessage.trim().toLowerCase().replace(/[¡!¿?.,]/g, '')
+    const isConfirmation = lastAssistantMsg &&
+      lastAssistantMsg.message.includes('Confirmas tu pedido') &&
+      AFFIRMATIVES.includes(customerMsgNorm)
+
+    if (isConfirmation) {
+      // Inject a strong override instruction as the last user message context
+      messages[messages.length - 1] = {
+        role: 'user',
+        content: `${customerMessage}\n\n[SISTEMA: El cliente acaba de confirmar su pedido. VE DIRECTAMENTE AL PASO 4. Envía las cuentas bancarias con el monto total del resumen anterior. PROHIBIDO hacer cualquier otra pregunta.]`
+      }
+      console.log('Order confirmation detected — injecting payment override')
+    }
+
     // Call Claude
     const response = await client.messages.create({
       model: 'claude-sonnet-4-5',
