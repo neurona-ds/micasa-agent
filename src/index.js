@@ -167,13 +167,16 @@ app.post('/webhook', async (req, res) => {
     const isWeekend = dow === 0 || dow === 6
     const msgLower = customerMessage.toLowerCase()
     const mentionsAlmuerzo = msgLower.includes('almuerzo') || msgLower.includes('almuerzos')
-    const mentionsOrder = (
+    const mentionsOrderIntent = (
       msgLower.includes('quiero') || msgLower.includes('pedir') || msgLower.includes('pedido') ||
       msgLower.includes('dame') || msgLower.includes('me das') || msgLower.includes('ordenar') ||
-      msgLower.includes('hoy') || msgLower.includes('domicilio') || msgLower.includes('delivery') ||
+      msgLower.includes('domicilio') || msgLower.includes('delivery') ||
+      msgLower.includes('para el lunes') || msgLower.includes('para el martes') ||
+      msgLower.includes('para la semana') || msgLower.includes('para mañana') ||
       /^\d+/.test(msgLower.trim()) // starts with a number e.g. "2 almuerzos"
     )
-    const isAlmuerzoOrderOnWeekend = isWeekend && mentionsAlmuerzo && mentionsOrder
+    // Fire HANDOFF if: mentions almuerzo + any order intent, OR if it's weekend and clear order keywords with food context
+    const isAlmuerzoOrderOnWeekend = isWeekend && mentionsAlmuerzo && mentionsOrderIntent
 
     let reply, needsHandoff, needsPaymentHandoff
     if (isAlmuerzoOrderOnWeekend) {
