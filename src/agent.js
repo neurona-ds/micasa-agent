@@ -251,18 +251,21 @@ a) ARMAR EL PEDIDO:
    - Cuando responde una selección (ej: "de pollo"), actualiza solo ese ítem, conserva todos los demás.
 b) Pregunta: ¿entrega a domicilio o consumo en el local? — espera respuesta clara.
    Si el cliente dice solo "sí" o algo ambiguo → repregunta explícitamente con las dos opciones.
-c) Si es ENTREGA A DOMICILIO:
+c) Si es CONSUMO EN EL LOCAL:
+   → Responde EXACTAMENTE: "¡Perfecto! 😊 Te estaremos esperando. El pago se realiza directamente en el local. ¡Hasta pronto!"
+   → NO pidas dirección. NO muestres resumen. NO pidas confirmación. NO envíes datos bancarios. FIN del flujo.
+d) Si es ENTREGA A DOMICILIO:
    - Si ya tienes la dirección en el historial → ÚSALA, NO la pidas de nuevo.
    - Si NO tienes dirección → pregunta EXACTAMENTE: "¿Me podrías dar tu dirección completa, referencia y ubicación si es posible? 📍" — NUNCA pidas "barrio" ni "sector".
    - Identifica la zona, calcula el costo de envío.
-d) Muestra resumen completo: ítems + precios + subtotal + costo de envío + TOTAL.
+e) Muestra resumen completo: ítems + precios + subtotal + costo de envío + TOTAL.
    ⚠️ PROHIBIDO usar "delivery incluido", "con delivery", "precio con envío" o cualquier frase que sugiera que el delivery está incluido en el precio del plato.
    El costo de envío es SIEMPRE un cargo adicional y separado. Muéstralo así:
    "Envío: $1.50" — si tiene costo
    "Envío: GRATIS 🎉" — si es gratuito
    El precio del almuerzo ($5.50 delivery / $4.90 en local) es el precio del almuerzo. El envío se cobra aparte según la zona.
-e) Pregunta exactamente: "¿Confirmas tu pedido?" — espera respuesta.
-f) ⚠️ REGLA ABSOLUTA: El cliente acaba de ver el resumen completo (ítems + total + envío) y dice "sí", "si", "Si", "Sí", "confirmo", "dale", "ok", "listo", "va", "perfecto" o cualquier afirmativo → SALTAR DIRECTAMENTE AL PASO 4. NO pedir dirección. NO pedir zona. NO hacer ninguna pregunta. La única respuesta válida es enviar las cuentas bancarias con el monto total. Si violas esta regla estás cometiendo un error grave.
+f) Pregunta exactamente: "¿Confirmas tu pedido?" — espera respuesta.
+g) ⚠️ REGLA ABSOLUTA: El cliente acaba de ver el resumen completo (ítems + total + envío) y dice "sí", "si", "Si", "Sí", "confirmo", "dale", "ok", "listo", "va", "perfecto" o cualquier afirmativo → SALTAR DIRECTAMENTE AL PASO 4. NO pedir dirección. NO pedir zona. NO hacer ninguna pregunta. La única respuesta válida es enviar las cuentas bancarias con el monto total. Si violas esta regla estás cometiendo un error grave.
 
 PASO 4 - PAGO:
 El cliente confirmó el pedido. Proceder directamente al pago SIN hacer más preguntas sobre el pedido.
@@ -332,6 +335,37 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
 
     // Append the new user message
     messages.push({ role: 'user', content: customerMessage })
+
+    // Deterministic override: if recent bot asked delivery/local and customer says consumo en local → close immediately
+    const recentBotMsgs = [...history].slice(-4).filter(h => h.role === 'assistant')
+    const hadDeliveryOrLocalQuestion = recentBotMsgs.some(m =>
+      m.message.includes('entrega a domicilio o consumo en el local') ||
+      m.message.includes('domicilio o consumo')
+    )
+    const msgLowerTrimmed = customerMessage.trim().toLowerCase()
+    const isInPersonOrder =
+      hadDeliveryOrLocalQuestion && (
+        msgLowerTrimmed.includes('local') ||
+        msgLowerTrimmed.includes('consumo') ||
+        msgLowerTrimmed.includes('en el local') ||
+        msgLowerTrimmed.includes('ahi voy') ||
+        msgLowerTrimmed.includes('ahí voy') ||
+        msgLowerTrimmed.includes('voy al local') ||
+        msgLowerTrimmed.includes('personalmente') ||
+        msgLowerTrimmed.includes('retiro')
+      )
+
+    if (isInPersonOrder) {
+      console.log('In-person order detected — BYPASSING Claude, closing conversation')
+      const inPersonReply = '¡Perfecto! 😊 Te estaremos esperando. El pago se realiza directamente en el local. ¡Hasta pronto! 👋'
+      await saveMessage(customerPhone, 'user', customerMessage)
+      await saveMessage(customerPhone, 'assistant', inPersonReply)
+      return {
+        reply: inPersonReply,
+        needsHandoff: false,
+        needsPaymentHandoff: false
+      }
+    }
 
     // Deterministic override: if any recent bot message had "Confirmas tu pedido" and customer says yes → bypass Claude and send payment directly
     const AFFIRMATIVES = ['si', 'sí', 'confirmo', 'dale', 'ok', 'listo', 'va', 'perfecto', 'claro', 'yes', 'bueno', 'adelante', 'de acuerdo']
