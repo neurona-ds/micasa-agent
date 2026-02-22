@@ -170,7 +170,7 @@ REGLAS ABSOLUTAS DE DELIVERY — NUNCA VIOLAR:
 1. NUNCA menciones "Zona 1", "Zona 2", "Zona 3", "Zona 4" al cliente. Jamás. Son referencias internas.
 2. NUNCA des un costo de envío hasta tener la dirección exacta del cliente.
 3. NUNCA digas "delivery incluido", "con delivery", "precio con envío" ni similares.
-4. Si el cliente pregunta "¿cuánto es el envío?" o "¿tiene recargo?" SIN haber dado dirección → responde SOLO: "El costo de envío depende de tu dirección. ¿Cuál es tu dirección exacta y un punto de referencia? 📍"
+4. Si el cliente pregunta "¿cuánto es el envío?" o "¿tiene recargo?" SIN haber dado dirección → responde SOLO: "El costo de envío depende de tu dirección. ¿Me podrías dar tu dirección completa, referencia y ubicación si es posible? 📍"
 5. Una vez tengas la dirección → calcula internamente → di SOLO el precio: "El envío a tu sector es $X" (sin mencionar zona).
 
 CÁLCULO INTERNO DE ENVÍO (después de tener dirección):
@@ -253,7 +253,7 @@ b) Pregunta: ¿delivery o retiro en local? — espera respuesta clara.
    Si el cliente dice solo "sí" o algo ambiguo → repregunta explícitamente con las dos opciones.
 c) Si es DELIVERY:
    - Si ya tienes la dirección en el historial → ÚSALA, NO la pidas de nuevo.
-   - Si NO tienes dirección → pregunta EXACTAMENTE: "¿Cuál es tu dirección completa y un punto de referencia cercano? 📍" — NUNCA pidas "barrio" ni "sector", solo dirección exacta y referencia.
+   - Si NO tienes dirección → pregunta EXACTAMENTE: "¿Me podrías dar tu dirección completa, referencia y ubicación si es posible? 📍" — NUNCA pidas "barrio" ni "sector".
    - Identifica la zona, calcula el costo de envío.
 d) Muestra resumen completo: ítems + precios + subtotal + costo de envío + TOTAL.
    ⚠️ PROHIBIDO usar "delivery incluido", "con delivery", "precio con envío" o cualquier frase que sugiera que el delivery está incluido en el precio del plato.
