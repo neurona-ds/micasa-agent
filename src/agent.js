@@ -117,21 +117,34 @@ function formatAlmuerzoDeliveryTiers(tiers) {
   }).join('\n\n')
 }
 
-// Detect whether the current order is pure almuerzo, pure carta, or mixed
-// Inspects the last 14 messages of conversation history
+// Detect whether the current order is pure almuerzo, pure carta, or mixed.
+// Only scans USER messages — bot messages contain "Jugo Natural", "Postre", etc.
+// as part of almuerzo descriptions, which would otherwise trigger false MIXED hits.
 function detectOrderTypeFromHistory(history) {
-  const recentMsgs = history.slice(-14)
-  const text = recentMsgs.map(h => h.message.toLowerCase()).join(' ')
+  // User messages: look for explicit order signals
+  const recentUserMsgs = history.filter(h => h.role === 'user').slice(-10)
+  const userText = recentUserMsgs.map(h => h.message.toLowerCase()).join(' ')
+
+  // Bot order-summary lines only (contain × or x) — e.g. "2 × Almuerzo del día"
+  const recentBotMsgs = history.filter(h => h.role === 'assistant').slice(-6)
+  const botSummaryText = recentBotMsgs
+    .filter(m => m.message.includes('×') || m.message.includes(' x '))
+    .map(m => m.message.toLowerCase()).join(' ')
+
+  const combined = userText + ' ' + botSummaryText
 
   const almuerzoSignals = ['almuerzo', 'menú del día', 'menu del dia', 'menú de hoy', 'menu de hoy', 'plan semanal', 'plan mensual']
+  // Carta signals: product names that would NEVER appear in an almuerzo description
   const cartaSignals = [
     'churrasco', 'pollo bbq', 'pollo al grill', 'tilapia', 'chuleta', 'seco de',
-    'parrillada', 'ají de carne', 'loco de', 'fanesca', 'sopa de quinoa',
-    'congelado', 'arroz con', 'batido', 'jugo natural'
+    'parrillada', 'ají de carne', 'loco de', 'fanesca', 'sopa de quinoa', 'congelado', 'arroz con'
   ]
+  // Beverages only count as carta when the USER explicitly requests them
+  const beverageSignals = ['batido', 'jugo natural']
 
-  const hasAlmuerzo = almuerzoSignals.some(s => text.includes(s))
-  const hasCarta = cartaSignals.some(s => text.includes(s))
+  const hasAlmuerzo = almuerzoSignals.some(s => combined.includes(s))
+  const hasCarta = cartaSignals.some(s => combined.includes(s)) ||
+                   beverageSignals.some(s => userText.includes(s))
 
   if (hasAlmuerzo && hasCarta) return 'mixed'
   if (hasAlmuerzo) return 'almuerzo'
@@ -406,15 +419,27 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       return acc
     }, [])
 
-    // Detect if customer is responding to an address request → call Maps API for zone
+    // Detect if customer is responding to an address request → call Maps API for zone.
+    // Require BOTH "dirección completa" AND "📍" — this is the exact phrase the bot uses
+    // when asking for the address. A lone 📍 in a greeting/menu message won't match.
     const lastBotMsg = [...history].reverse().find(h => h.role === 'assistant')
     const lastBotAskedAddress = lastBotMsg && (
-      lastBotMsg.message.includes('dirección completa') ||
+      lastBotMsg.message.includes('dirección completa') &&
       lastBotMsg.message.includes('📍')
     )
 
+    // Quick sanity check: is this message plausibly an address?
+    // Avoids geocoding short replies, turn-time answers, and single words.
+    const msgTrimmed = customerMessage.trim()
+    const looksLikeAddress = (
+      msgTrimmed.length >= 15 &&
+      !/^(domicilio|delivery|retiro|local|si|sí|no|ok|dale|listo|claro|perfecto|turno|quiero|para)$/i.test(msgTrimmed) &&
+      !/^\d{1,2}:\d{2}/.test(msgTrimmed) &&    // "12:30", "1:30 – 2:30"
+      !/^turno/i.test(msgTrimmed)              // "turno de las..."
+    )
+
     let enrichedMessage = customerMessage
-    if (lastBotAskedAddress) {
+    if (lastBotAskedAddress && looksLikeAddress) {
       console.log(`Address response detected — calling Google Maps for zone`)
       const zoneResult = await getDeliveryZoneByAddress(customerMessage)
       if (zoneResult) {
@@ -490,8 +515,9 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     if (isConfirmation) {
       console.log('Order confirmation detected — BYPASSING Claude, sending payment directly')
 
-      // Extract total from the confirmation message (looks for patterns like "TOTAL: $X" or "Total: $X")
-      const totalMatch = confirmationMsg.message.match(/TOTAL[:\s*]+\$?([\d,.]+)/i)
+      // Extract total from the confirmation message.
+      // Use \bTOTAL\b so we match "TOTAL:" but NOT "Subtotal:" (word boundary prevents substring match)
+      const totalMatch = confirmationMsg.message.match(/\bTOTAL\b[:\s*]+\$?([\d,.]+)/i)
       const totalAmount = totalMatch ? `$${totalMatch[1]}` : '(ver resumen arriba)'
 
       // Build payment reply directly without calling Claude
