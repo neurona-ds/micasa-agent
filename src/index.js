@@ -13,6 +13,12 @@ app.use(express.json())
 const processedMsgIds = new Set()
 const MSG_ID_MAX = 500
 
+// IDs of messages WE sent via the WATI API.
+// WATI echoes our outgoing messages back as incoming webhooks (owner:false),
+// which would create an infinite loop. We capture the sent ID and block the echo.
+const botSentMsgIds = new Set()
+const BOT_SENT_MAX = 500
+
 // Rate limit: only process one message per phone number at a time
 // Prevents loops when WATI fires multiple webhooks for the same conversation
 const processingPhones = new Set()
@@ -50,8 +56,16 @@ app.post('/webhook', async (req, res) => {
     }
 
     // Deduplicate by whatsappMessageId — WATI fires duplicates for the same event
-    const waMsgId = body.whatsappMessageId || body.id || null
+    const waMsgId = body.whatsappMessageId || null
     if (waMsgId) {
+      // Block echo: WATI echoes our own outgoing messages back as incoming webhooks.
+      // If this ID was registered when we sent it, ignore it silently.
+      if (botSentMsgIds.has(waMsgId)) {
+        console.log(`Bot-echo ignored: msgId=${waMsgId}`)
+        return res.status(200).json({ status: 'bot_echo_ignored' })
+      }
+
+      // Block duplicate: same customer message arriving twice
       if (processedMsgIds.has(waMsgId)) {
         console.log(`Duplicate webhook ignored: msgId=${waMsgId}`)
         return res.status(200).json({ status: 'duplicate_ignored' })
@@ -260,7 +274,8 @@ app.post('/webhook', async (req, res) => {
   }
 })
 
-// Send message via WATI
+// Send message via WATI and register the outgoing message ID so we can
+// block the echo webhook WATI fires back for our own messages.
 async function sendWatiMessage(phone, message) {
   try {
     const response = await axios.post(
@@ -274,7 +289,25 @@ async function sendWatiMessage(phone, message) {
         }
       }
     )
-    console.log(`Message sent to ${phone}:`, response.data?.result || 'ok')
+
+    // Capture the outgoing WhatsApp message ID so we can ignore the echo webhook
+    const sentMsgId =
+      response.data?.id ||
+      response.data?.messageId ||
+      response.data?.data?.id ||
+      response.data?.data?.messageId ||
+      null
+
+    if (sentMsgId) {
+      if (botSentMsgIds.size >= BOT_SENT_MAX) {
+        const first = botSentMsgIds.values().next().value
+        botSentMsgIds.delete(first)
+      }
+      botSentMsgIds.add(sentMsgId)
+      console.log(`Message sent to ${phone}: ok (msgId=${sentMsgId})`)
+    } else {
+      console.log(`Message sent to ${phone}:`, response.data?.result || 'ok', '(no msgId in response)')
+    }
   } catch (error) {
     console.error('Error sending WATI message:', error.response?.data || error.message)
   }
