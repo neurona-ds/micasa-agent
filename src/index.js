@@ -78,11 +78,30 @@ app.post('/webhook', async (req, res) => {
       processedMsgIds.add(waMsgId)
     }
 
-    // Only process actual incoming message events — ignore status updates, delivery receipts, etc.
+    // ── STRICT INCOMING MESSAGE FILTER ──────────────────────────────────────
+    // A genuine customer message has ALL of these:
+    //   eventType === "message"   (not a status update / delivery receipt)
+    //   owner     === false       (false = from customer, true = from bot/operator)
+    //   type      === "text" | "image" | "document" | "audio" | "video"
+    //   statusString in [undefined, "SENT", "RECEIVED"]  (not DELIVERED / READ)
+    //
+    // We check eventType first (cheapest). The owner + statusString checks
+    // below catch bot echoes and delivery/read receipts that sneak through
+    // with eventType:"message" — those were causing unsolicited bot replies.
+
     const eventType = (body.eventType || '').toLowerCase()
-    if (eventType && eventType !== 'message') {
-      console.log(`Ignoring non-message event: eventType=${eventType}`)
+    if (eventType !== 'message') {
+      // Catches: empty string, "sentMessageStatus", "delivery", "read", etc.
+      console.log(`Ignoring non-message event: eventType="${eventType}"`)
       return res.status(200).json({ status: 'ignored_event_type' })
+    }
+
+    // Block outgoing message webhooks (delivery/read receipts from WATI)
+    const statusString = (body.statusString || '').toUpperCase()
+    const OUTGOING_STATUSES = ['DELIVERED', 'READ', 'FAILED', 'OPENED', 'PLAYED', 'DELETED']
+    if (OUTGOING_STATUSES.includes(statusString)) {
+      console.log(`Ignoring status-update webhook: statusString="${statusString}"`)
+      return res.status(200).json({ status: 'ignored_status_update' })
     }
 
     const rawText = typeof body.text === 'string' ? body.text.trim().toLowerCase() : ''
