@@ -8,6 +8,11 @@ const { isBotPaused, pauseBot, resumeBot } = require('./memory')
 const app = express()
 app.use(express.json())
 
+// Dedup by whatsappMessageId — WATI sometimes fires the same webhook 2-3x
+// Keep the last 500 message IDs in memory (oldest evicted first)
+const processedMsgIds = new Set()
+const MSG_ID_MAX = 500
+
 // Rate limit: only process one message per phone number at a time
 // Prevents loops when WATI fires multiple webhooks for the same conversation
 const processingPhones = new Set()
@@ -42,6 +47,21 @@ app.post('/webhook', async (req, res) => {
     if (!customerPhone) {
       console.log('No phone found in payload — ignoring')
       return res.status(200).json({ status: 'ignored' })
+    }
+
+    // Deduplicate by whatsappMessageId — WATI fires duplicates for the same event
+    const waMsgId = body.whatsappMessageId || body.id || null
+    if (waMsgId) {
+      if (processedMsgIds.has(waMsgId)) {
+        console.log(`Duplicate webhook ignored: msgId=${waMsgId}`)
+        return res.status(200).json({ status: 'duplicate_ignored' })
+      }
+      // Evict oldest entries if set is getting large
+      if (processedMsgIds.size >= MSG_ID_MAX) {
+        const first = processedMsgIds.values().next().value
+        processedMsgIds.delete(first)
+      }
+      processedMsgIds.add(waMsgId)
     }
 
     // Only process actual incoming message events — ignore status updates, delivery receipts, etc.
@@ -234,7 +254,9 @@ app.post('/webhook', async (req, res) => {
 
   } catch (error) {
     console.error('Webhook error:', error)
-    res.status(500).json({ status: 'error', message: error.message })
+    // Always return 200 — a 5xx response causes WATI to retry the webhook,
+    // which would make the bot send duplicate/unsolicited messages.
+    res.status(200).json({ status: 'error', message: error.message })
   }
 })
 
