@@ -44,6 +44,13 @@ app.post('/webhook', async (req, res) => {
       return res.status(200).json({ status: 'ignored' })
     }
 
+    // Only process actual incoming message events — ignore status updates, delivery receipts, etc.
+    const eventType = (body.eventType || '').toLowerCase()
+    if (eventType && eventType !== 'message') {
+      console.log(`Ignoring non-message event: eventType=${eventType}`)
+      return res.status(200).json({ status: 'ignored_event_type' })
+    }
+
     const rawText = typeof body.text === 'string' ? body.text.trim().toLowerCase() : ''
 
     // --- OWNER MESSAGES (outgoing — sent by bot API or human operator in WATI) ---
