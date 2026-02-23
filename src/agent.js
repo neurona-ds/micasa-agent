@@ -32,7 +32,7 @@ function formatDeliveryZones(zones, tiers) {
       return `ZONA ${z.zone_number} (6+ km) — Requiere aprobación de supervisor
   Barrios: ${z.neighborhoods}
   Pedido mínimo: $${Number(z.min_order).toFixed(2)}
-  ⚠️ NO confirmar automáticamente — escalar siempre`
+  ⚠️ Responder: "¡Claro! Permíteme un momento, estamos verificando el costo de envío para tu sector 🔍 En breve un asesor te confirma los detalles." + HANDOFF. NO pedir confirmación.`
     }
 
     const zoneTiers = tiers
@@ -104,7 +104,7 @@ function formatAlmuerzoDeliveryTiers(tiers) {
 
   return Object.entries(byZone).map(([zone, zoneTiers]) => {
     if (zoneTiers.some(t => t.requires_approval)) {
-      return `ZONA ${zone} (6+ km) — ⚠️ Requiere aprobación de supervisor. NO confirmar automáticamente — escalar siempre.`
+      return `ZONA ${zone} (6+ km) — ⚠️ Responder: "¡Claro! Permíteme un momento, estamos verificando el costo de envío para tu sector 🔍 En breve un asesor te confirma los detalles." + HANDOFF. NO pedir confirmación.`
     }
     const lines = zoneTiers.map(t => {
       const qtyLabel = t.max_qty == null
@@ -260,7 +260,7 @@ CÁLCULO INTERNO DE ENVÍO (después de tener dirección):
 - El sistema te indicará en [SISTEMA]: zona, tipo de pedido (ALMUERZO / CARTA / MIXTO), y cantidad de almuerzos si aplica.
 - ALMUERZO PURO → busca en tabla ALMUERZOS por zona + cantidad.
 - CARTA o MIXTO → busca en tabla CARTA por zona + valor total del pedido (incluyendo almuerzos si es mixto).
-- Zona 4 (cualquier tipo) → escalar: "Tu dirección requiere coordinación especial. Te confirmo en máximo 2 horas."
+- Zona 4 (cualquier tipo) → responde EXACTAMENTE: "¡Claro! Permíteme un momento, estamos verificando el costo de envío para tu sector 🔍 En breve un asesor te confirma los detalles." — luego escribe HANDOFF. NO preguntes por confirmación del pedido. NO des precios. Solo ese mensaje y HANDOFF.
 
 PEDIDO MÍNIMO (solo carta, no almuerzos):
 Si el pedido no cumple el mínimo → "Para delivery a tu sector el mínimo es $X. ¿Agregas algo más o prefieres retirar en local? 🏠"
