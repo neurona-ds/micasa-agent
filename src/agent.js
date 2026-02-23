@@ -1,5 +1,5 @@
 const Anthropic = require('@anthropic-ai/sdk')
-const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getDeliveryZoneByAddress, advanceCycleIfNeeded, getWeekAlmuerzos, getPaymentMethods } = require('./memory')
+const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getAlmuerzoDeliveryTiers, getDeliveryZoneByAddress, advanceCycleIfNeeded, getWeekAlmuerzos, getPaymentMethods } = require('./memory')
 const path = require('path')
 require('dotenv').config({ path: path.resolve(__dirname, '../.env'), override: true })
 
@@ -93,9 +93,72 @@ function formatPaymentMethods(methods) {
   ).join('\n\n')
 }
 
-function buildSystemPrompt(config, products, deliveryZones, deliveryTiers, weekAlmuerzos, paymentMethods) {
+function formatAlmuerzoDeliveryTiers(tiers) {
+  if (!tiers || tiers.length === 0) return '(Tarifas de almuerzo no disponibles)'
+
+  const byZone = {}
+  for (const t of tiers) {
+    if (!byZone[t.zone_number]) byZone[t.zone_number] = []
+    byZone[t.zone_number].push(t)
+  }
+
+  return Object.entries(byZone).map(([zone, zoneTiers]) => {
+    if (zoneTiers.some(t => t.requires_approval)) {
+      return `ZONA ${zone} (6+ km) — ⚠️ Requiere aprobación de supervisor. NO confirmar automáticamente — escalar siempre.`
+    }
+    const lines = zoneTiers.map(t => {
+      const qtyLabel = t.max_qty == null
+        ? `${t.min_qty}+ almuerzos`
+        : `${t.min_qty} almuerzo${parseInt(t.min_qty) !== 1 ? 's' : ''}`
+      const priceLabel = t.is_free ? 'GRATIS 🎉' : `$${Number(t.delivery_price).toFixed(2)}`
+      return `    • ${qtyLabel}: envío ${priceLabel}`
+    }).join('\n')
+    return `ZONA ${zone}:\n${lines}`
+  }).join('\n\n')
+}
+
+// Detect whether the current order is pure almuerzo, pure carta, or mixed
+// Inspects the last 14 messages of conversation history
+function detectOrderTypeFromHistory(history) {
+  const recentMsgs = history.slice(-14)
+  const text = recentMsgs.map(h => h.message.toLowerCase()).join(' ')
+
+  const almuerzoSignals = ['almuerzo', 'menú del día', 'menu del dia', 'menú de hoy', 'menu de hoy', 'plan semanal', 'plan mensual']
+  const cartaSignals = [
+    'churrasco', 'pollo bbq', 'pollo al grill', 'tilapia', 'chuleta', 'seco de',
+    'parrillada', 'ají de carne', 'loco de', 'fanesca', 'sopa de quinoa',
+    'congelado', 'arroz con', 'batido', 'jugo natural'
+  ]
+
+  const hasAlmuerzo = almuerzoSignals.some(s => text.includes(s))
+  const hasCarta = cartaSignals.some(s => text.includes(s))
+
+  if (hasAlmuerzo && hasCarta) return 'mixed'
+  if (hasAlmuerzo) return 'almuerzo'
+  return 'carta'
+}
+
+// Try to extract the number of almuerzos from conversation history
+function detectAlmuerzoQty(history) {
+  let qty = 1 // default: assume 1 if not explicitly mentioned
+  const recentUserMsgs = history.filter(h => h.role === 'user').slice(-10)
+  for (const msg of recentUserMsgs) {
+    const match = msg.message.match(/(\d+)\s*almuerzo/i)
+    if (match) qty = Math.max(qty, parseInt(match[1]))
+  }
+  // Also check bot order summaries (e.g. "2 × Almuerzo del día")
+  const recentBotMsgs = history.filter(h => h.role === 'assistant').slice(-6)
+  for (const msg of recentBotMsgs) {
+    const match = msg.message.match(/(\d+)\s*[xX×]\s*almuerzo/i)
+    if (match) qty = Math.max(qty, parseInt(match[1]))
+  }
+  return qty
+}
+
+function buildSystemPrompt(config, products, deliveryZones, deliveryTiers, weekAlmuerzos, paymentMethods, almuerzoDeliveryTiers) {
   const menu = formatProducts(products)
   const deliveryPricing = formatDeliveryZones(deliveryZones, deliveryTiers)
+  const almuerzoDeliveryPricing = formatAlmuerzoDeliveryTiers(almuerzoDeliveryTiers)
   const almuerzoInfo = formatWeekAlmuerzos(weekAlmuerzos, config)
   const bankAccounts = formatPaymentMethods(paymentMethods)
 
@@ -163,8 +226,14 @@ Cuando el cliente pregunta por planes o quiere almuerzos para toda la semana o e
 IMPORTANTE: NUNCA menciones "descuento" ni "ahorro" — son simplemente pagos anticipados por conveniencia.
 Los planes se pagan por adelantado mediante transferencia bancaria (mismo flujo de pago).
 
-ZONAS Y PRECIOS DE DELIVERY (USO INTERNO ÚNICAMENTE):
+ZONAS Y PRECIOS DE DELIVERY — CARTA (USO INTERNO ÚNICAMENTE):
+Usar cuando el pedido contiene ítems de carta O es un pedido mixto (carta + almuerzo).
 ${deliveryPricing}
+
+TARIFAS DE ENVÍO — ALMUERZOS (USO INTERNO ÚNICAMENTE):
+Usar SOLO cuando el pedido es EXCLUSIVAMENTE almuerzos del día.
+Si hay cualquier ítem de carta en el pedido → usar la tabla de CARTA sobre el total combinado.
+${almuerzoDeliveryPricing}
 
 REGLAS ABSOLUTAS DE DELIVERY — NUNCA VIOLAR:
 
@@ -172,16 +241,13 @@ REGLAS ABSOLUTAS DE DELIVERY — NUNCA VIOLAR:
 2. NUNCA des un costo de envío hasta tener la dirección exacta del cliente.
 3. NUNCA digas "delivery incluido", "con delivery", "precio con envío" ni similares.
 4. Si el cliente pregunta "¿cuánto es el envío?" o "¿tiene recargo?" SIN haber dado dirección → responde SOLO: "El costo de envío depende de tu dirección. ¿Me podrías dar tu dirección completa, referencia y ubicación si es posible? 📍"
-5. Una vez tengas la dirección → calcula internamente → di SOLO el precio: "El envío a tu sector es $X" (sin mencionar zona).
+5. Una vez tengas la dirección → el sistema inyectará automáticamente la zona y el tipo de pedido en el mensaje (etiqueta [SISTEMA]). Úsala para calcular internamente → di SOLO el precio: "El envío a tu sector es $X" (sin mencionar zona).
 
 CÁLCULO INTERNO DE ENVÍO (después de tener dirección):
-- Almuerzo, 1 unidad, sector cercano → envío $0.50
-- Almuerzo, 2+ unidades, sector cercano → envío GRATIS 🎉
-- Almuerzo, sector medio → envío $2.50
-- Almuerzo, sector lejos → envío $3.50
-- Almuerzo, sector muy lejos → escalar a supervisor
-- Carta general: usar tabla de zonas y tiers para calcular
-- Sector muy lejos (carta) → escalar: "Tu dirección requiere coordinación especial. Te confirmo en máximo 2 horas."
+- El sistema te indicará en [SISTEMA]: zona, tipo de pedido (ALMUERZO / CARTA / MIXTO), y cantidad de almuerzos si aplica.
+- ALMUERZO PURO → busca en tabla ALMUERZOS por zona + cantidad.
+- CARTA o MIXTO → busca en tabla CARTA por zona + valor total del pedido (incluyendo almuerzos si es mixto).
+- Zona 4 (cualquier tipo) → escalar: "Tu dirección requiere coordinación especial. Te confirmo en máximo 2 horas."
 
 PEDIDO MÍNIMO (solo carta, no almuerzos):
 Si el pedido no cumple el mínimo → "Para delivery a tu sector el mínimo es $X. ¿Agregas algo más o prefieres retirar en local? 🏠"
@@ -313,17 +379,18 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     const currentCycle = await advanceCycleIfNeeded()
 
     // Fetch all data in parallel (history fetched BEFORE saving new message)
-    const [config, products, deliveryZones, deliveryTiers, weekAlmuerzos, paymentMethods, history] = await Promise.all([
+    const [config, products, deliveryZones, deliveryTiers, almuerzoDeliveryTiers, weekAlmuerzos, paymentMethods, history] = await Promise.all([
       getAllConfig(),
       getProducts(),
       getDeliveryZones(),
       getDeliveryTiers(),
+      getAlmuerzoDeliveryTiers(),
       getWeekAlmuerzos(currentCycle),
       getPaymentMethods(),
       getHistory(customerPhone)
     ])
 
-    const fullSystemPrompt = buildSystemPrompt(config, products, deliveryZones, deliveryTiers, weekAlmuerzos, paymentMethods)
+    const fullSystemPrompt = buildSystemPrompt(config, products, deliveryZones, deliveryTiers, weekAlmuerzos, paymentMethods, almuerzoDeliveryTiers)
 
     // Build messages array for Claude — ensure alternating roles (no two consecutive same role)
     const rawMessages = history.map(h => ({ role: h.role, content: h.message }))
@@ -352,7 +419,23 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       const zoneResult = await getDeliveryZoneByAddress(customerMessage)
       if (zoneResult) {
         const { zone, distanceKm, formattedAddress } = zoneResult
-        enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección geocodificada → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. Usar esta zona para calcular el costo de envío según la tabla de tiers. NO mencionar zona al cliente.]`
+
+        // Detect order type so Claude uses the right pricing table
+        const orderType = detectOrderTypeFromHistory(history)
+        let orderTypeNote
+        if (orderType === 'almuerzo') {
+          const qty = detectAlmuerzoQty(history)
+          orderTypeNote = `Tipo de pedido: ALMUERZO PURO (${qty} unidad${qty !== 1 ? 'es' : ''}). Usar tabla TARIFAS ALMUERZOS para calcular envío.`
+          console.log(`Order type: ALMUERZO (qty=${qty})`)
+        } else if (orderType === 'mixed') {
+          orderTypeNote = `Tipo de pedido: MIXTO (almuerzo + carta). Usar tabla CARTA sobre el total combinado.`
+          console.log(`Order type: MIXED`)
+        } else {
+          orderTypeNote = `Tipo de pedido: CARTA. Usar tabla CARTA por valor del pedido.`
+          console.log(`Order type: CARTA`)
+        }
+
+        enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección geocodificada → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente.]`
         console.log(`Zone injected: Zone ${zone} (${distanceKm}km)`)
       } else {
         console.warn(`Zone calculation failed — Claude will estimate from address text`)

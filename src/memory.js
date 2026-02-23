@@ -209,6 +209,22 @@ async function getWeekAlmuerzos(currentCycle) {
   }
 }
 
+// Get almuerzo delivery tiers (quantity-based flat price per zone)
+async function getAlmuerzoDeliveryTiers() {
+  const { data, error } = await supabase
+    .from('almuerzo_delivery_tiers')
+    .select('zone_number, min_qty, max_qty, delivery_price, is_free, requires_approval')
+    .order('zone_number')
+    .order('sort_order')
+
+  if (error) {
+    console.error('Error fetching almuerzo delivery tiers:', error)
+    return []
+  }
+
+  return data
+}
+
 // Get all active payment methods
 async function getPaymentMethods() {
   const { data, error } = await supabase
@@ -327,6 +343,7 @@ module.exports = {
   getProducts,
   getDeliveryZones,
   getDeliveryTiers,
+  getAlmuerzoDeliveryTiers,
   getDeliveryZoneByAddress,
   advanceCycleIfNeeded,
   getWeekAlmuerzos,
