@@ -1,5 +1,6 @@
 const Anthropic = require('@anthropic-ai/sdk')
 const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getAlmuerzoDeliveryTiers, getDeliveryZoneByAddress, advanceCycleIfNeeded, getWeekAlmuerzos, getPaymentMethods } = require('./memory')
+const { createZohoDeliveryRecord } = require('./zoho')
 const path = require('path')
 require('dotenv').config({ path: path.resolve(__dirname, '../.env'), override: true })
 
@@ -167,6 +168,96 @@ function detectAlmuerzoQty(history) {
   }
   return qty
 }
+
+// ─── Zoho order-data extraction helpers ───────────────────────────────────────
+
+/**
+ * Scan history backwards for the user message that came right after the bot
+ * asked for "dirección completa 📍" — that's the raw customer address.
+ */
+function extractAddressFromHistory(history) {
+  for (let i = 0; i < history.length - 1; i++) {
+    const msg = history[i]
+    if (
+      msg.role === 'assistant' &&
+      msg.message.includes('dirección completa') &&
+      msg.message.includes('📍')
+    ) {
+      const nextUser = history.slice(i + 1).find(m => m.role === 'user')
+      if (nextUser) return nextUser.message.trim()
+    }
+  }
+  return null
+}
+
+/**
+ * Scan recent history for a turno mention (e.g. "Turno: 12:30" or "turno de las 1:30").
+ */
+function extractTurnoFromHistory(history) {
+  const recent = history.slice(-14)
+  for (const msg of [...recent].reverse()) {
+    const match = msg.message.match(/[Tt]urno[:\s]+([^\n,]+)/i)
+    if (match) return match[1].trim()
+    // bare time like "12:30" mentioned alongside turno context
+    const timeMatch = msg.message.match(/\b(12:30|1:30|2:30|13:30|14:30)\b/)
+    if (timeMatch && msg.message.toLowerCase().includes('turno')) return timeMatch[1]
+  }
+  return null
+}
+
+/**
+ * Build the orderData payload for Zoho from the order-summary message
+ * (the assistant message that contained "Confirmas tu pedido") plus history.
+ *
+ * @param {Object} summaryMsg  - history entry: { role:'assistant', message:'...' }
+ * @param {Array}  history     - full conversation history
+ * @param {string} phone       - customer WhatsApp phone
+ * @param {string} name        - customer name from WATI
+ * @returns {Object} orderData ready for createZohoDeliveryRecord()
+ */
+function extractOrderDataForZoho(summaryMsg, history, phone, name) {
+  const text = summaryMsg.message
+
+  // Total — use word boundary to avoid matching "Subtotal"
+  const totalMatch = text.match(/\bTOTAL\b[:\s*]+\$?([\d,.]+)/i)
+  const total = totalMatch ? parseFloat(totalMatch[1].replace(',', '.')) : null
+
+  // Delivery cost — take the LAST occurrence of "Envío: $X.XX"
+  const deliveryMatches = [...text.matchAll(/Envío[:\s*]+\$?([\d,.]+)/gi)]
+  const deliveryCost = deliveryMatches.length > 0
+    ? parseFloat(deliveryMatches[deliveryMatches.length - 1][1].replace(',', '.'))
+    : null
+
+  // Address: look for "📍 ..." line in the summary message first
+  const addrInMsg = text.match(/📍\s*([^\n]+)/)
+  const address = addrInMsg
+    ? addrInMsg[1].trim()
+    : extractAddressFromHistory(history)
+
+  // Turno: look for "Turno" in the summary message first
+  const turnoInMsg = text.match(/[Tt]urno[:\s]+([^\n,]+)/i)
+  const turno = turnoInMsg
+    ? turnoInMsg[1].trim()
+    : extractTurnoFromHistory(history)
+
+  // Items: lines containing the multiplication sign (order rows)
+  const itemLines = text.split('\n').filter(l => l.includes('×') || /\d\s*x\s+/i.test(l))
+  const itemsText = itemLines.length > 0
+    ? itemLines.join('\n').trim()
+    : text.split(/Subtotal|─{3,}/)[0].trim()   // fallback: everything before the totals block
+
+  return {
+    phone,
+    customerName: name || phone,
+    total,
+    deliveryCost,
+    address,
+    turno,
+    itemsText
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 
 function buildSystemPrompt(config, products, deliveryZones, deliveryTiers, weekAlmuerzos, paymentMethods, almuerzoDeliveryTiers) {
   const menu = formatProducts(products)
@@ -565,6 +656,27 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     // Detect handoff type
     const needsPaymentHandoff = replyText.includes('HANDOFF_PAYMENT')
     const needsHandoff = needsPaymentHandoff || replyText.includes('HANDOFF')
+
+    // ── Zoho: fire on payment handoff (customer sent comprobante) ──────────────
+    // At this point the customer has sent proof of payment → safe to create the
+    // Zoho Contact (if new) + Planificación de Entregas record with Pending status.
+    // Entirely non-blocking — a Zoho failure must never break the bot.
+    if (needsPaymentHandoff && process.env.ZOHO_CLIENT_ID) {
+      // Find the order-summary message (the one that had "Confirmas tu pedido")
+      const allAssistantMsgs = [...history].filter(h => h.role === 'assistant')
+      const orderSummaryMsg  = [...allAssistantMsgs].reverse().find(m => m.message.includes('Confirmas tu pedido'))
+
+      if (orderSummaryMsg) {
+        const orderData = extractOrderDataForZoho(orderSummaryMsg, history, customerPhone, customerName)
+        console.log('Zoho: firing delivery record creation for', customerPhone, orderData)
+        createZohoDeliveryRecord(orderData).catch(err =>
+          console.error('Zoho delivery record failed (non-blocking):', err.message)
+        )
+      } else {
+        console.warn('Zoho: HANDOFF_PAYMENT detected but no order summary found in history — skipping')
+      }
+    }
+    // ──────────────────────────────────────────────────────────────────────────
 
     const cleanReply = replyText
       .replace('HANDOFF_PAYMENT', '')
