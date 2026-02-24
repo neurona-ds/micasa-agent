@@ -699,4 +699,33 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
   }
 }
 
-module.exports = { processMessage }
+/**
+ * Called from index.js when a customer sends an image (payment screenshot).
+ * Fetches history, finds the order summary, builds the Zoho payload and fires
+ * createZohoDeliveryRecord() — fully non-blocking.
+ */
+async function triggerZohoOnPayment(customerPhone, customerName) {
+  if (!process.env.ZOHO_CLIENT_ID) return  // Zoho not configured — skip silently
+
+  try {
+    const history = await getHistory(customerPhone)
+    const allAssistantMsgs = history.filter(h => h.role === 'assistant')
+    const orderSummaryMsg  = [...allAssistantMsgs].reverse().find(m => m.message.includes('Confirmas tu pedido'))
+
+    if (!orderSummaryMsg) {
+      console.warn('Zoho: no order summary found in history for', customerPhone, '— skipping')
+      return
+    }
+
+    const orderData = extractOrderDataForZoho(orderSummaryMsg, history, customerPhone, customerName)
+    console.log('Zoho: firing delivery record (payment image received) for', customerPhone, orderData)
+
+    createZohoDeliveryRecord(orderData).catch(err =>
+      console.error('Zoho delivery record failed (non-blocking):', err.message)
+    )
+  } catch (err) {
+    console.error('Zoho triggerZohoOnPayment error (non-blocking):', err.message)
+  }
+}
+
+module.exports = { processMessage, triggerZohoOnPayment }

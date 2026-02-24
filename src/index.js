@@ -2,7 +2,7 @@ const path = require('path')
 require('dotenv').config({ path: path.resolve(__dirname, '../.env'), override: true })
 const express = require('express')
 const axios = require('axios')
-const { processMessage } = require('./agent')
+const { processMessage, triggerZohoOnPayment } = require('./agent')
 const { isBotPaused, pauseBot, resumeBot } = require('./memory')
 
 const app = express()
@@ -202,6 +202,9 @@ app.post('/webhook', async (req, res) => {
 
       await sendWatiMessage(customerPhone, ackMessage)
       await notifyHandoff(customerPhone, customerName, 'PAYMENT', 'Cliente envió comprobante de pago')
+
+      // Fire Zoho record creation non-blocking — image = payment proof received
+      triggerZohoOnPayment(customerPhone, customerName)
 
       return res.status(200).json({ status: 'media_handoff' })
     }
