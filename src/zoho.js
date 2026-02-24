@@ -135,6 +135,22 @@ async function createZohoContact(phone, name) {
   throw new Error(`Zoho contact creation failed: ${JSON.stringify(result)}`)
 }
 
+// ─── Turno → Horario_de_Entrega pick-list mapper ─────────────────────────────
+
+/**
+ * Convert the raw turno string extracted from conversation history into the
+ * exact pick-list value that exists in your Zoho module:
+ *   "Inmediato" | "12:30 a 1:30" | "1:30 a 2:30" | "2:30 a 3:30"
+ */
+function mapTurnoToPickList(turno) {
+  if (!turno) return 'Inmediato'
+  const t = turno.toString().trim()
+  if (/12[:\s]?30/.test(t))          return '12:30 a 1:30'
+  if (/1[:\s]?30|13[:\s]?30/.test(t)) return '1:30 a 2:30'
+  if (/2[:\s]?30|14[:\s]?30/.test(t)) return '2:30 a 3:30'
+  return 'Inmediato'   // carta orders or unrecognised turno → immediate
+}
+
 // ─── Delivery record creation ──────────────────────────────────────────────────
 
 /**
@@ -144,12 +160,6 @@ async function createZohoContact(phone, name) {
  *   1. Look up Zoho Contact by phone
  *   2. If not found → auto-create Contact
  *   3. Create record in Planificación de Entregas, linked to contact
- *
- * Field API names verified against the actual Zoho module definition.
- *
- * ⚠️  Pick-list fields (Estado, Horario_de_Entrega, Tipo_de_Entrega) must
- *     contain values that exist in your Zoho pick-list configuration.
- *     Verify under: Zoho CRM → Settings → Modules and Fields → your module → field → Edit values
  *
  * @param {Object} orderData
  *   phone, customerName, itemsText, total, deliveryCost, address, turno
@@ -182,25 +192,18 @@ async function createZohoDeliveryRecord(orderData) {
     // Order items — "Notas de Cocina" is the kitchen-facing notes field
     Notas_de_Cocina:    orderData.itemsText || '',
 
-    // Delivery address fields
+    // Delivery address
     Direccion:          orderData.address   || '',
 
-    // Turno / delivery time slot — Pick List field "Horario de Entrega"
-    // ⚠️  Value must match one of your pick-list options exactly (e.g. "12:30", "1:30", "2:30")
-    Horario_de_Entrega: orderData.turno     || '',
+    // Turno mapped to exact pick-list value: "Inmediato" | "12:30 a 1:30" | "1:30 a 2:30" | "2:30 a 3:30"
+    Horario_de_Entrega: mapTurnoToPickList(orderData.turno),
 
     // Financial fields
     Valor_Venta:        orderData.total        || 0,
     Costo_de_Envio:     orderData.deliveryCost ?? 0,
 
-    // Status — Pick List field "Estado"
-    // ⚠️  Value must match one of your pick-list options exactly (e.g. "Pendiente")
-    // Human updates to paid manually when they confirm the screenshot
-    Estado:             'Pendiente',
-
-    // Delivery type — Pick List field "Tipo de Entrega"
-    // ⚠️  Verify exact pick-list value (e.g. "Delivery", "A domicilio")
-    Tipo_de_Entrega:    'Delivery',
+    // Status — always "Pendiente de Pago" on creation; human updates to "Pago Confirmado"
+    Estado:             'Pendiente de Pago',
 
     // Delivery date — defaulting to today; human can adjust if needed
     Fecha_de_Envio:     today
