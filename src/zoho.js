@@ -56,14 +56,14 @@ async function getZohoAccessToken() {
 
 /**
  * Look up a Zoho Contact by phone number.
- * Returns the contact { id, Full_Name } or null if not found.
+ * Returns { id, name } or null if not found.
  */
 async function lookupZohoContact(phone) {
   try {
     const token     = await getZohoAccessToken()
     const apiDomain = process.env.ZOHO_API_DOMAIN || 'https://www.zohoapis.com'
 
-    // Normalize phone: strip leading + and any non-digit characters for search
+    // Normalize: strip non-digits for search
     const cleanPhone = phone.replace(/\D/g, '')
 
     const response = await axios.get(
@@ -84,7 +84,7 @@ async function lookupZohoContact(phone) {
     console.log(`Zoho: no contact found for phone ${cleanPhone}`)
     return null
   } catch (err) {
-    // 404 from Zoho search API just means "no results" — not a real error
+    // 404 from Zoho search = "no results" — not a real error
     if (err.response?.status === 404) return null
     console.warn('Zoho contact lookup error:', err.response?.data || err.message)
     return null
@@ -100,7 +100,7 @@ async function createZohoContact(phone, name) {
   const token     = await getZohoAccessToken()
   const apiDomain = process.env.ZOHO_API_DOMAIN || 'https://www.zohoapis.com'
 
-  // Split name into First / Last (Zoho requires them separately)
+  // Zoho requires First_Name + Last_Name separately
   const parts     = (name || phone).trim().split(/\s+/)
   const firstName = parts[0]
   const lastName  = parts.slice(1).join(' ') || '-'
@@ -109,10 +109,10 @@ async function createZohoContact(phone, name) {
     `${apiDomain}/crm/v2/Contacts`,
     {
       data: [{
-        First_Name: firstName,
-        Last_Name:  lastName,
-        Mobile:     phone,
-        Phone:      phone,
+        First_Name:  firstName,
+        Last_Name:   lastName,
+        Mobile:      phone,
+        Phone:       phone,
         Lead_Source: 'WhatsApp Bot'
       }]
     },
@@ -138,12 +138,18 @@ async function createZohoContact(phone, name) {
 // ─── Delivery record creation ──────────────────────────────────────────────────
 
 /**
- * Main entry point called after customer sends payment screenshot.
+ * Main entry point — called after customer sends payment screenshot (HANDOFF_PAYMENT).
  *
  * Flow:
  *   1. Look up Zoho Contact by phone
- *   2. If not found → create Contact
- *   3. Create record in Planificación de Entregas module, linked to contact
+ *   2. If not found → auto-create Contact
+ *   3. Create record in Planificación de Entregas, linked to contact
+ *
+ * Field API names verified against the actual Zoho module definition.
+ *
+ * ⚠️  Pick-list fields (Estado, Horario_de_Entrega, Tipo_de_Entrega) must
+ *     contain values that exist in your Zoho pick-list configuration.
+ *     Verify under: Zoho CRM → Settings → Modules and Fields → your module → field → Edit values
  *
  * @param {Object} orderData
  *   phone, customerName, itemsText, total, deliveryCost, address, turno
@@ -151,42 +157,56 @@ async function createZohoContact(phone, name) {
 async function createZohoDeliveryRecord(orderData) {
   const token      = await getZohoAccessToken()
   const apiDomain  = process.env.ZOHO_API_DOMAIN || 'https://www.zohoapis.com'
-  // IMPORTANT: verify this API name in Zoho → Settings → Developer Space → APIs → Modules
   const moduleName = process.env.ZOHO_MODULE_API_NAME || 'Planificacion_de_Entregas'
 
-  // ── Step 1: look up or create the contact ──────────────────────────────────
+  // ── Step 1: look up or create the contact ─────────────────────────────────
   let contact = await lookupZohoContact(orderData.phone)
-
   if (!contact) {
     const newId = await createZohoContact(orderData.phone, orderData.customerName)
     contact = { id: newId, name: orderData.customerName }
   }
 
-  // ── Step 2: build the delivery record ──────────────────────────────────────
-  // Field API names below must match your Zoho module exactly.
-  // To find them: Zoho CRM → Settings → Modules and Fields → click your module → each field shows its API name.
+  // ── Step 2: build the record using verified field API names ───────────────
+  const today = new Date().toISOString().split('T')[0]  // YYYY-MM-DD
+
   const record = {
-    // Standard / linked fields
-    Name:           `Pedido ${orderData.phone} ${new Date().toLocaleDateString('es-EC')}`,
-    Contact_Name:   { id: contact.id },
+    // Record display name
+    Name:               `Pedido - ${contact.name} - ${today}`,
 
-    // Order details
-    // ⚠️  Adjust these API field names to match your module:
-    Descripcion_Pedido: orderData.itemsText  || '',
-    Direccion_Entrega:  orderData.address    || '',
-    Turno:              orderData.turno      || '',
-    Total_Pedido:       orderData.total      || 0,
-    Costo_Envio:        orderData.deliveryCost ?? 0,
+    // Contact lookup — field API name: "Cliente"
+    Cliente:            { id: contact.id },
 
-    // Payment status — set to Pending; human updates to Paid on receipt of screenshot
-    Estado_Pago:    'Pendiente',
-    Fecha_Pedido:   new Date().toISOString().split('T')[0],   // YYYY-MM-DD
+    // Phone (stored directly on the record for quick access)
+    Telefono:           orderData.phone,
 
-    // Phone for quick reference without opening the contact
-    Telefono_Cliente: orderData.phone
+    // Order items — "Notas de Cocina" is the kitchen-facing notes field
+    Notas_de_Cocina:    orderData.itemsText || '',
+
+    // Delivery address fields
+    Direccion:          orderData.address   || '',
+
+    // Turno / delivery time slot — Pick List field "Horario de Entrega"
+    // ⚠️  Value must match one of your pick-list options exactly (e.g. "12:30", "1:30", "2:30")
+    Horario_de_Entrega: orderData.turno     || '',
+
+    // Financial fields
+    Valor_Venta:        orderData.total        || 0,
+    Costo_de_Envio:     orderData.deliveryCost ?? 0,
+
+    // Status — Pick List field "Estado"
+    // ⚠️  Value must match one of your pick-list options exactly (e.g. "Pendiente")
+    // Human updates to paid manually when they confirm the screenshot
+    Estado:             'Pendiente',
+
+    // Delivery type — Pick List field "Tipo de Entrega"
+    // ⚠️  Verify exact pick-list value (e.g. "Delivery", "A domicilio")
+    Tipo_de_Entrega:    'Delivery',
+
+    // Delivery date — defaulting to today; human can adjust if needed
+    Fecha_de_Envio:     today
   }
 
-  // ── Step 3: POST the record ────────────────────────────────────────────────
+  // ── Step 3: POST the record ───────────────────────────────────────────────
   const response = await axios.post(
     `${apiDomain}/crm/v2/${moduleName}`,
     { data: [record] },
