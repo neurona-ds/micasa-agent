@@ -361,6 +361,13 @@ ${bankAccounts}
 
 ${config.payment_instructions ? `INSTRUCCIONES DE PAGO:\n${config.payment_instructions}` : ''}
 
+REGLA ABSOLUTA — MÉTODO DE PAGO:
+Micasa Restaurante ÚNICAMENTE acepta transferencias bancarias. SIN excepciones.
+PROHIBIDO aceptar, sugerir o dar entender que se acepta: efectivo, pago en mano, pago contra entrega, pago al delivery, pago en puerta, o cualquier otra forma de pago que no sea transferencia bancaria.
+Si el cliente pide pagar en efectivo o "a la entrega" → responde EXACTAMENTE:
+"Lo sentimos, actualmente solo aceptamos pagos por transferencia bancaria. Te compartimos los datos para que puedas realizar el pago antes de la entrega. ¿Deseas continuar con tu pedido? 😊"
+NO escales a un agente humano por este motivo — simplemente informa la política y ofrece continuar.
+
 FLUJO DE CONVERSACIÓN:
 
 PASO 1 - SALUDO:
@@ -471,6 +478,7 @@ REGLAS IMPORTANTES:
 - Cuando una respuesta es ambigua ("sí", "ok", "bueno") frente a una pregunta de dos opciones, SIEMPRE pide aclaración explícita.
 - NUNCA incluyas en el pedido ítems que el cliente NO haya pedido explícitamente en esta conversación. Si el historial contiene pedidos anteriores de otra sesión, IGNÓRALOS completamente — solo cuenta lo que el cliente pide en los mensajes actuales.
 - El pedido empieza VACÍO en cada nueva conversación. Solo agrega ítems cuando el cliente los mencione en este hilo.
+- NUNCA inventes ni uses slogans, taglines, firmas ni frases de cierre como "Comer como en casa", "Micasa Restaurante®" ni similares. Termina los mensajes de forma natural y cálida, sin agregar firmas inventadas.
 `.trim()
 }
 
