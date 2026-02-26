@@ -65,9 +65,13 @@ function getTodaySchedule(hoursData, now) {
  * Full weekly schedule for the system prompt.
  * e.g. "Lunes: 08:00–15:30 | Martes: 08:00–15:30 | ... | Sábado: Cerrado | Domingo: Cerrado"
  */
+// Ecuador cultural week order: Monday first, Sunday last
+const MON_FIRST = [1, 2, 3, 4, 5, 6, 0]
+
 function formatScheduleStr(hoursData) {
   if (!hoursData || hoursData.length === 0) return 'Lunes–Viernes: 08:00–15:30 | Sábado: Cerrado | Domingo: Cerrado'
-  return hoursData.map(h => {
+  const sorted = [...hoursData].sort((a, b) => MON_FIRST.indexOf(a.day_of_week) - MON_FIRST.indexOf(b.day_of_week))
+  return sorted.map(h => {
     const day = h.day_name || BH_DAYS_ES[h.day_of_week] || `Día ${h.day_of_week}`
     if (!h.open_time || !h.close_time) return `${day}: Cerrado`
     return `${day}: ${h.open_time.substring(0, 5)}–${h.close_time.substring(0, 5)}`
@@ -80,7 +84,9 @@ function formatScheduleStr(hoursData) {
  */
 function openDaysLabel(hoursData) {
   if (!hoursData || hoursData.length === 0) return 'lunes a viernes de 08:00 a 15:30'
-  const openRows = hoursData.filter(h => h.open_time && h.close_time)
+  const openRows = [...hoursData]
+    .filter(h => h.open_time && h.close_time)
+    .sort((a, b) => MON_FIRST.indexOf(a.day_of_week) - MON_FIRST.indexOf(b.day_of_week))
   if (openRows.length === 0) return '(sin horario configurado)'
   const dayNames = openRows.map(r => (r.day_name || BH_DAYS_ES[r.day_of_week] || `día ${r.day_of_week}`).toLowerCase())
   const daysStr = dayNames.length === 1
