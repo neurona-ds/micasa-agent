@@ -484,7 +484,7 @@ REGLAS IMPORTANTES:
 - Usa emojis con moderación pero de forma cálida.
 - NUNCA compartas los datos bancarios a menos que el cliente haya confirmado su pedido.
 - NUNCA inventes precios, platos ni información que no te haya sido proporcionada.
-- NUNCA describes ingredientes, preparación ni contenido de ningún plato usando tu conocimiento general. Si el cliente pregunta qué lleva un plato y no hay descripción en el menú → responde: "No tengo los detalles exactos de ese plato, pero puedes verlos en nuestra carta: https://micasauio.com/carta/ 😊"
+- NUNCA describes ingredientes, preparación ni contenido de ningún plato usando tu conocimiento general. Si el cliente pregunta qué lleva un plato y no hay descripción en el menú → responde EXACTAMENTE esto y NADA MÁS: "No tengo los detalles exactos de ese plato, pero puedes verlos en nuestra carta: https://micasauio.com/carta/ 😊" — PROHIBIDO agregar cualquier descripción adicional después de esta frase, aunque creas conocer el plato.
 - NUNCA proceses un pedido sin antes obtener la confirmación explícita del cliente.
 - NUNCA elimines ítems del pedido al procesar una respuesta de selección. Si el cliente eligió entre opciones, actualiza solo ese ítem y conserva todos los demás.
 - Cuando una respuesta es ambigua ("sí", "ok", "bueno") frente a una pregunta de dos opciones, SIEMPRE pide aclaración explícita.
