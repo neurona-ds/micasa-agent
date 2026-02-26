@@ -844,10 +844,11 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     const isRestaurantOpen = checkIsOpen(businessHours, nowEc)
 
     // Inject stored address into context so Claude always knows what's on file in DB.
-    // Without this, when a customer says "use my last address", Claude guesses from
-    // conversation history and can pick an old address from a previous order.
+    // Inject stored address so Claude knows what's on file and can offer it to the customer.
+    // When it's time to ask for the delivery address, Claude should offer the stored one
+    // as a one-tap option rather than silently assuming it or asking from scratch.
     if (storedGeo?.address) {
-      enrichedMessage += `\n\n[SISTEMA: Dirección registrada en DB para este cliente: "${storedGeo.address}". Cuando el cliente pida usar su dirección registrada/anterior, usa EXACTAMENTE esta.]`
+      enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una dirección registrada: "${storedGeo.address}". Al momento de pedir la dirección de entrega, SIEMPRE ofrece primero esta opción preguntando: "¿Enviamos a tu dirección anterior — ${storedGeo.address} — o prefieres indicar una nueva? 📍". Si el cliente confirma, usa EXACTAMENTE esta dirección. Si da una nueva, úsala y descarta la registrada.]`
     }
 
     // Inject [SISTEMA] after-hours tag directly into the user message so Claude sees
