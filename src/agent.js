@@ -624,7 +624,26 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       }
     }
 
-    // Append the (possibly zone-enriched) user message
+    // Compute business-hours status — same formula as buildSystemPrompt.
+    // Must happen BEFORE messages.push() so we can inject the after-hours tag
+    // into the message that Claude actually receives.
+    const nowEc = nowInEcuador()
+    const nowHour = nowEc.getHours()
+    const nowMin  = nowEc.getMinutes()
+    const nowIsWeekend = nowEc.getDay() === 0 || nowEc.getDay() === 6
+    const nowIsWithinHours = nowHour >= 8 && (nowHour < 15 || (nowHour === 15 && nowMin <= 30))
+    const isRestaurantOpen = !nowIsWeekend && nowIsWithinHours
+
+    // Inject [SISTEMA] after-hours tag into enrichedMessage BEFORE it is pushed to
+    // the messages array. This reinforces the ⚠️ FUERA DE HORARIO flag in the system
+    // prompt by placing it directly in the conversation context so Claude can't miss it.
+    if (!isRestaurantOpen) {
+      const currentTimeStr = `${String(nowHour).padStart(2, '0')}:${String(nowMin).padStart(2, '0')}`
+      enrichedMessage += `\n\n[SISTEMA: ⚠️ FUERA DE HORARIO — Son las ${currentTimeStr}. Operamos de 8:00 a 15:30, lunes a viernes. PROHIBIDO procesar pedidos con entrega inmediata. SIEMPRE ofrece programar el pedido para el próximo día hábil.]`
+      console.log(`After-hours tag injected: ${currentTimeStr}`)
+    }
+
+    // Append the fully-enriched user message (zone + after-hours tags applied above)
     messages.push({ role: 'user', content: enrichedMessage })
 
     // Deterministic override: if the MOST RECENT bot message asked delivery/local
@@ -669,24 +688,6 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         needsHandoff: false,
         needsPaymentHandoff: false
       }
-    }
-
-    // Compute business-hours status — same formula as buildSystemPrompt.
-    // Needed here so deterministic overrides can respect the restaurant schedule.
-    const nowEc = nowInEcuador()
-    const nowHour = nowEc.getHours()
-    const nowMin  = nowEc.getMinutes()
-    const nowIsWeekend = nowEc.getDay() === 0 || nowEc.getDay() === 6
-    const nowIsWithinHours = nowHour >= 8 && (nowHour < 15 || (nowHour === 15 && nowMin <= 30))
-    const isRestaurantOpen = !nowIsWeekend && nowIsWithinHours
-
-    // Inject [SISTEMA] after-hours tag into the user message when restaurant is closed.
-    // This reinforces the ⚠️ FUERA DE HORARIO flag already in the system prompt — placing
-    // it directly in the conversation context makes Claude far more likely to act on it
-    // rather than ignoring a distant system-prompt instruction.
-    if (!isRestaurantOpen) {
-      const currentTimeStr = `${String(nowHour).padStart(2, '0')}:${String(nowMin).padStart(2, '0')}`
-      enrichedMessage += `\n\n[SISTEMA: ⚠️ FUERA DE HORARIO — Son las ${currentTimeStr}. Operamos de 8:00 a 15:30, lunes a viernes. PROHIBIDO procesar pedidos con entrega inmediata. SIEMPRE ofrece programar el pedido para el próximo día hábil.]`
     }
 
     // Deterministic override: if any recent bot message had "Confirmas tu pedido" and customer says yes → bypass Claude and send payment directly.
