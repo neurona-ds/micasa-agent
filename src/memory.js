@@ -317,6 +317,40 @@ async function saveDeliveryAddress(phone, formattedAddress, zone, distanceKm) {
   if (error) console.error('Error saving delivery address:', error)
 }
 
+// ─── Pending order ────────────────────────────────────────────────────────────
+// Saves the fully-extracted orderData object when the bot sends an order summary.
+// At payment time we read this instead of scanning conversation history.
+
+async function savePendingOrder(phone, orderData) {
+  const { error } = await supabase
+    .from('customers')
+    .update({ pending_order: orderData })
+    .eq('phone', phone)
+
+  if (error) console.error('Error saving pending_order:', error)
+}
+
+async function getPendingOrder(phone) {
+  const { data, error } = await supabase
+    .from('customers')
+    .select('pending_order')
+    .eq('phone', phone)
+    .single()
+
+  if (error || !data) return null
+  return data.pending_order || null
+}
+
+async function clearPendingOrder(phone) {
+  const { error } = await supabase
+    .from('customers')
+    .update({ pending_order: null })
+    .eq('phone', phone)
+
+  if (error) console.error('Error clearing pending_order:', error)
+}
+// ──────────────────────────────────────────────────────────────────────────────
+
 // Get the last geocoded delivery data stored for a customer.
 // Returns { address, zone, distanceKm } or null if nothing stored yet.
 async function getCustomerAddress(phone) {
@@ -403,5 +437,8 @@ module.exports = {
   resumeBot,
   saveDeliveryAddress,
   getCustomerAddress,
-  getBusinessHours
+  getBusinessHours,
+  savePendingOrder,
+  getPendingOrder,
+  clearPendingOrder
 }

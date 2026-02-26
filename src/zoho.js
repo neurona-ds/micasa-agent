@@ -221,6 +221,9 @@ async function createZohoDeliveryRecord(orderData) {
     // Delivery type — triggers kitchen printer workflow
     Tipo_de_Entrega:    'Individual',
 
+    // Quantity — almuerzo orders only (null/absent for carta orders)
+    ...(orderData.cantidad != null && { Cantidad: orderData.cantidad }),
+
     // Delivery date — scheduled date when provided, today for immediate orders
     Fecha_de_Envio:     deliveryDate
   }

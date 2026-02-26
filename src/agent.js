@@ -1,5 +1,5 @@
 const Anthropic = require('@anthropic-ai/sdk')
-const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getAlmuerzoDeliveryTiers, getDeliveryZoneByAddress, advanceCycleIfNeeded, getWeekAlmuerzos, getPaymentMethods, saveDeliveryAddress, getCustomerAddress, getBusinessHours } = require('./memory')
+const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getAlmuerzoDeliveryTiers, getDeliveryZoneByAddress, advanceCycleIfNeeded, getWeekAlmuerzos, getPaymentMethods, saveDeliveryAddress, getCustomerAddress, getBusinessHours, savePendingOrder, getPendingOrder, clearPendingOrder } = require('./memory')
 const { createZohoDeliveryRecord } = require('./zoho')
 const path = require('path')
 require('dotenv').config({ path: path.resolve(__dirname, '../.env'), override: true })
@@ -444,6 +444,16 @@ function extractOrderDataForZoho(summaryMsg, history, phone, name, storedAddress
 
   const itemsText = itemLines.join('\n')
 
+  // Cantidad — only for almuerzo orders. Extract directly from itemsText since
+  // we're working on the summary message where the quantity is explicit.
+  // e.g. "1 Almuerzo del día..." → 1, "2 Almuerzos..." → 2
+  let cantidad = null
+  if (/almuerzo/i.test(itemsText)) {
+    const cantMatch = itemsText.match(/(\d+)\s*[xX×]?\s*almuerzo/i)
+      || itemsText.match(/^[-•]?\s*(\d+)\s+almuerzo/im)
+    cantidad = cantMatch ? parseInt(cantMatch[1]) : 1
+  }
+
   return {
     phone,
     customerName: name || phone,
@@ -452,7 +462,8 @@ function extractOrderDataForZoho(summaryMsg, history, phone, name, storedAddress
     address,
     turno,
     itemsText,
-    scheduledDate   // YYYY-MM-DD or null (null = immediate order, use today)
+    scheduledDate,  // YYYY-MM-DD or null (null = immediate order, use today)
+    cantidad        // number or null (null = non-almuerzo order)
   }
 }
 
@@ -951,33 +962,60 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     await saveMessage(customerPhone, 'user', customerMessage)
     await saveMessage(customerPhone, 'assistant', replyText)
 
+    // ── Persist order snapshot when bot sends an order summary ─────────────────
+    // Detect if this reply is an order summary (has structured TOTAL: $X + Envío: $X/GRATIS).
+    // If yes, extract and save to customers.pending_order so payment-time lookup
+    // reads from DB instead of scanning history — immune to false matches.
+    const strippedReply = replyText.replace(/\*+/g, '')
+    if (
+      /\bTOTAL[:\s]+\$[\d.]+/i.test(strippedReply) &&
+      /[Ee]nv[ií]o[:\s]+[\$G]/i.test(strippedReply)
+    ) {
+      const geoSnap = await getCustomerAddress(customerPhone).catch(() => null)
+      const snap = extractOrderDataForZoho(
+        { message: replyText },
+        history,
+        customerPhone,
+        customerName,
+        geoSnap?.address || null
+      )
+      savePendingOrder(customerPhone, snap).catch(err =>
+        console.error('savePendingOrder error (non-blocking):', err.message)
+      )
+    }
+    // ──────────────────────────────────────────────────────────────────────────
+
     // Detect handoff type
     const needsPaymentHandoff = replyText.includes('HANDOFF_PAYMENT')
     const needsHandoff = needsPaymentHandoff || replyText.includes('HANDOFF')
 
     // ── Zoho: fire on payment handoff (customer sent comprobante) ──────────────
-    // At this point the customer has sent proof of payment → safe to create the
-    // Zoho Contact (if new) + Planificación de Entregas record with Pending status.
-    // Entirely non-blocking — a Zoho failure must never break the bot.
     if (needsPaymentHandoff && process.env.ZOHO_CLIENT_ID) {
-      // Find the most recent order-summary message — identified by having both TOTAL and Envío/Subtotal.
-      // Do NOT search for "Confirmas tu pedido": Claude sometimes skips that line, causing a fallback
-      // to an older session's summary with wrong totals and dates.
-      const allAssistantMsgs = [...history].filter(h => h.role === 'assistant')
-      const orderSummaryMsg  = [...allAssistantMsgs].reverse().find(
-        m => /\bTOTAL[:\s]+\$[\d.]+/i.test(m.message) && /[Ee]nv[ií]o[:\s]+[\$G]/i.test(m.message)
-      )
+      // Primary: read pre-saved order snapshot from DB (written when bot sent the summary).
+      // Fallback: history scan (safety net in case DB write failed or bot was redeployed mid-order).
+      let orderData = await getPendingOrder(customerPhone).catch(() => null)
+      if (orderData) {
+        console.log('Zoho: using pending_order from DB for', customerPhone, orderData)
+      } else {
+        console.warn('Zoho: no pending_order in DB — falling back to history scan for', customerPhone)
+        const allAssistantMsgs = [...history].filter(h => h.role === 'assistant')
+        const orderSummaryMsg  = [...allAssistantMsgs].reverse().find(
+          m => /\bTOTAL[:\s]+\$[\d.]+/i.test(m.message) && /[Ee]nv[ií]o[:\s]+[\$G]/i.test(m.message)
+        )
+        if (orderSummaryMsg) {
+          const geoData = await getCustomerAddress(customerPhone).catch(() => null)
+          orderData = extractOrderDataForZoho(orderSummaryMsg, history, customerPhone, customerName, geoData?.address || null)
+        }
+      }
 
-      if (orderSummaryMsg) {
-        // Pull stored geocoded address (primary source) — falls back inside extractOrderDataForZoho
-        const geoData = await getCustomerAddress(customerPhone).catch(() => null)
-        const orderData = extractOrderDataForZoho(orderSummaryMsg, history, customerPhone, customerName, geoData?.address || null)
+      if (orderData) {
         console.log('Zoho: firing delivery record creation for', customerPhone, orderData)
         createZohoDeliveryRecord(orderData).catch(err =>
           console.error('Zoho delivery record failed (non-blocking):', err.message)
         )
+        clearPendingOrder(customerPhone).catch(() => {})
       } else {
-        console.warn('Zoho: HANDOFF_PAYMENT detected but no order summary found in history — skipping')
+        console.warn('Zoho: HANDOFF_PAYMENT detected but no order data found — skipping')
       }
     }
     // ──────────────────────────────────────────────────────────────────────────
@@ -1012,30 +1050,34 @@ async function triggerZohoOnPayment(customerPhone, customerName) {
   if (!process.env.ZOHO_CLIENT_ID) return  // Zoho not configured — skip silently
 
   try {
-    // Fetch history and stored geocoded address in parallel
-    const [history, geoData] = await Promise.all([
-      getHistory(customerPhone),
-      getCustomerAddress(customerPhone).catch(() => null)
-    ])
+    // Primary: read pre-saved order snapshot from DB.
+    // Fallback: history scan (safety net for deploys mid-order or DB write failures).
+    let orderData = await getPendingOrder(customerPhone).catch(() => null)
 
-    const allAssistantMsgs = history.filter(h => h.role === 'assistant')
-    const orderSummaryMsg  = [...allAssistantMsgs].reverse().find(
-      m => /\bTOTAL[:\s]+\$[\d.]+/i.test(m.message) && /[Ee]nv[ií]o[:\s]+[\$G]/i.test(m.message)
-    )
-
-    if (!orderSummaryMsg) {
-      console.warn('Zoho: no order summary found in history for', customerPhone, '— skipping')
-      return
+    if (orderData) {
+      console.log('Zoho: using pending_order from DB for', customerPhone, orderData)
+    } else {
+      console.warn('Zoho: no pending_order in DB — falling back to history scan for', customerPhone)
+      const [history, geoData] = await Promise.all([
+        getHistory(customerPhone),
+        getCustomerAddress(customerPhone).catch(() => null)
+      ])
+      const allAssistantMsgs = history.filter(h => h.role === 'assistant')
+      const orderSummaryMsg  = [...allAssistantMsgs].reverse().find(
+        m => /\bTOTAL[:\s]+\$[\d.]+/i.test(m.message) && /[Ee]nv[ií]o[:\s]+[\$G]/i.test(m.message)
+      )
+      if (!orderSummaryMsg) {
+        console.warn('Zoho: no order summary found in history for', customerPhone, '— skipping')
+        return
+      }
+      orderData = extractOrderDataForZoho(orderSummaryMsg, history, customerPhone, customerName, geoData?.address || null)
     }
 
-    // Pass stored geocoded address as primary source — extractOrderDataForZoho falls back
-    // to 📍 in summary, then history scan if geoData is null
-    const orderData = extractOrderDataForZoho(orderSummaryMsg, history, customerPhone, customerName, geoData?.address || null)
     console.log('Zoho: firing delivery record (payment image received) for', customerPhone, orderData)
-
     createZohoDeliveryRecord(orderData).catch(err =>
       console.error('Zoho delivery record failed (non-blocking):', err.message)
     )
+    clearPendingOrder(customerPhone).catch(() => {})
   } catch (err) {
     console.error('Zoho triggerZohoOnPayment error (non-blocking):', err.message)
   }
