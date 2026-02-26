@@ -91,9 +91,12 @@ app.post('/webhook', async (req, res) => {
 
     // Block non-WhatsApp channels — WATI routes Facebook Messenger, Instagram, etc.
     // through the same webhook. sourceType 7 = Facebook Messenger.
-    // We only respond to WhatsApp (sourceType 0 or absent).
+    // Dual check: loose equality (handles both number 7 and string "7") +
+    // sourceUrl containing "fb.me" / "facebook" as a fallback.
     const sourceType = body.sourceType
-    if (sourceType === 7) {
+    const sourceUrl  = (body.sourceUrl || '').toLowerCase()
+    const isFacebook = (sourceType == 7) || sourceUrl.includes('fb.me') || sourceUrl.includes('facebook.com')  // eslint-disable-line eqeqeq
+    if (isFacebook) {
       console.log(`Ignoring non-WhatsApp message: sourceType=${sourceType} sourceUrl=${body.sourceUrl || 'null'}`)
       return res.status(200).json({ status: 'ignored_non_whatsapp' })
     }
