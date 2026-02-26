@@ -218,6 +218,9 @@ async function createZohoDeliveryRecord(orderData) {
     // Status — always "Pendiente de Pago" on creation; human updates to "Pago Confirmado"
     Estado:             'Pendiente de Pago',
 
+    // Delivery type — always "Entrega Individual" for bot orders (triggers kitchen printer workflow)
+    Tipo_de_Entrega:    'Entrega Individual',
+
     // Delivery date — scheduled date when provided, today for immediate orders
     Fecha_de_Envio:     deliveryDate
   }
