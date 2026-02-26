@@ -627,18 +627,31 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     // Append the (possibly zone-enriched) user message
     messages.push({ role: 'user', content: enrichedMessage })
 
-    // Deterministic override: if recent bot asked delivery/local and customer says consumo en local → close immediately
+    // Deterministic override: if the MOST RECENT bot message asked delivery/local
+    // and the customer replies with an in-person signal → close immediately.
+    //
+    // IMPORTANT: only check the LAST assistant message, not any of the last 4.
+    // Using .some() on a window of messages caused false positives: when the bot
+    // had already moved past the delivery/local question to asking for the address,
+    // the old question was still in the window — so an address containing "local"
+    // (e.g. "Centro comercial el bosque local 1 planta baja") incorrectly triggered
+    // the in-person close. Checking only the last message prevents this entirely.
+    //
+    // Also dropped the bare includes('local') match — too broad (matches store locales,
+    // shopping centres, etc.). Only specific phrases are now used.
     const recentBotMsgs = [...history].slice(-4).filter(h => h.role === 'assistant')
-    const hadDeliveryOrLocalQuestion = recentBotMsgs.some(m =>
-      m.message.includes('entrega a domicilio o consumo en el local') ||
-      m.message.includes('domicilio o consumo')
-    )
+    const lastBotMsg = recentBotMsgs[recentBotMsgs.length - 1]
+    const hadDeliveryOrLocalQuestion = !!(lastBotMsg && (
+      lastBotMsg.message.includes('entrega a domicilio o consumo en el local') ||
+      lastBotMsg.message.includes('domicilio o consumo')
+    ))
     const msgLowerTrimmed = customerMessage.trim().toLowerCase()
     const isInPersonOrder =
       hadDeliveryOrLocalQuestion && (
-        msgLowerTrimmed.includes('local') ||
+        msgLowerTrimmed === 'local' ||                     // exact single-word reply
+        /\ben el local\b/.test(msgLowerTrimmed) ||         // "en el local" phrase
+        /\bal local\b/.test(msgLowerTrimmed) ||            // "al local"
         msgLowerTrimmed.includes('consumo') ||
-        msgLowerTrimmed.includes('en el local') ||
         msgLowerTrimmed.includes('ahi voy') ||
         msgLowerTrimmed.includes('ahí voy') ||
         msgLowerTrimmed.includes('voy al local') ||
