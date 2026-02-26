@@ -177,7 +177,10 @@ async function createZohoDeliveryRecord(orderData) {
   }
 
   // ── Step 2: build the record using verified field API names ───────────────
-  const today = new Date().toISOString().split('T')[0]  // YYYY-MM-DD
+  // Use Ecuador timezone (UTC-5) — new Date().toISOString() returns UTC which rolls
+  // over to the next calendar day after 7pm Ecuador time, giving the wrong date.
+  // en-CA locale produces YYYY-MM-DD format directly, no splitting needed.
+  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Guayaquil' })
 
   const record = {
     // Record display name
