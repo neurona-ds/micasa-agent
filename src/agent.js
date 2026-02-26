@@ -693,7 +693,7 @@ e) Muestra resumen completo: ítems + precios + subtotal + costo de envío + TOT
    "Envío: $1.50" — si tiene costo
    "Envío: GRATIS 🎉" — si es gratuito
    El precio del almuerzo ($5.50 delivery / $4.90 en local) es el precio del almuerzo. El envío se cobra aparte según la zona.
-f) Pregunta exactamente: "¿Confirmas tu pedido?" — espera respuesta.
+f) ⛔ REGLA ABSOLUTA — CONFIRMACIÓN OBLIGATORIA: Después de mostrar el resumen completo, SIEMPRE termina el mensaje con exactamente esta pregunta: "¿Confirmas tu pedido?" — NUNCA pases al PASO 4 sin haber recibido una respuesta afirmativa a esta pregunta. PROHIBIDO enviar datos bancarios en el mismo mensaje del resumen. PROHIBIDO saltarte este paso aunque el cliente haya dado el turno, la dirección o cualquier otro dato.
 g) ⚠️ REGLA ABSOLUTA: El cliente acaba de ver el resumen completo (ítems + total + envío) y dice "sí", "si", "Si", "Sí", "confirmo", "dale", "ok", "listo", "va", "perfecto" o cualquier afirmativo → SALTAR DIRECTAMENTE AL PASO 4. NO pedir dirección. NO pedir zona. NO hacer ninguna pregunta. La única respuesta válida es enviar las cuentas bancarias con el monto total. Si violas esta regla estás cometiendo un error grave.
 
 PASO 4 - PAGO:
@@ -959,9 +959,13 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     // Zoho Contact (if new) + Planificación de Entregas record with Pending status.
     // Entirely non-blocking — a Zoho failure must never break the bot.
     if (needsPaymentHandoff && process.env.ZOHO_CLIENT_ID) {
-      // Find the order-summary message (the one that had "Confirmas tu pedido")
+      // Find the most recent order-summary message — identified by having both TOTAL and Envío/Subtotal.
+      // Do NOT search for "Confirmas tu pedido": Claude sometimes skips that line, causing a fallback
+      // to an older session's summary with wrong totals and dates.
       const allAssistantMsgs = [...history].filter(h => h.role === 'assistant')
-      const orderSummaryMsg  = [...allAssistantMsgs].reverse().find(m => m.message.includes('Confirmas tu pedido'))
+      const orderSummaryMsg  = [...allAssistantMsgs].reverse().find(
+        m => /\bTOTAL\b/i.test(m.message) && /envío|subtotal/i.test(m.message)
+      )
 
       if (orderSummaryMsg) {
         // Pull stored geocoded address (primary source) — falls back inside extractOrderDataForZoho
@@ -1014,7 +1018,9 @@ async function triggerZohoOnPayment(customerPhone, customerName) {
     ])
 
     const allAssistantMsgs = history.filter(h => h.role === 'assistant')
-    const orderSummaryMsg  = [...allAssistantMsgs].reverse().find(m => m.message.includes('Confirmas tu pedido'))
+    const orderSummaryMsg  = [...allAssistantMsgs].reverse().find(
+      m => /\bTOTAL\b/i.test(m.message) && /envío|subtotal/i.test(m.message)
+    )
 
     if (!orderSummaryMsg) {
       console.warn('Zoho: no order summary found in history for', customerPhone, '— skipping')
