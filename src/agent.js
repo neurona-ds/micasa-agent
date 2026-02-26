@@ -640,10 +640,10 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     // Also dropped the bare includes('local') match — too broad (matches store locales,
     // shopping centres, etc.). Only specific phrases are now used.
     const recentBotMsgs = [...history].slice(-4).filter(h => h.role === 'assistant')
-    const lastBotMsg = recentBotMsgs[recentBotMsgs.length - 1]
-    const hadDeliveryOrLocalQuestion = !!(lastBotMsg && (
-      lastBotMsg.message.includes('entrega a domicilio o consumo en el local') ||
-      lastBotMsg.message.includes('domicilio o consumo')
+    const lastBotMsgForInPerson = recentBotMsgs[recentBotMsgs.length - 1]
+    const hadDeliveryOrLocalQuestion = !!(lastBotMsgForInPerson && (
+      lastBotMsgForInPerson.message.includes('entrega a domicilio o consumo en el local') ||
+      lastBotMsgForInPerson.message.includes('domicilio o consumo')
     ))
     const msgLowerTrimmed = customerMessage.trim().toLowerCase()
     const isInPersonOrder =
