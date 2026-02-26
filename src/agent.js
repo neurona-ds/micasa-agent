@@ -68,7 +68,7 @@ function getTodaySchedule(hoursData, now) {
 function formatScheduleStr(hoursData) {
   if (!hoursData || hoursData.length === 0) return 'Lunes–Viernes: 08:00–15:30 | Sábado: Cerrado | Domingo: Cerrado'
   return hoursData.map(h => {
-    const day = BH_DAYS_ES[h.day_of_week] || `Día ${h.day_of_week}`
+    const day = h.day_name || BH_DAYS_ES[h.day_of_week] || `Día ${h.day_of_week}`
     if (!h.open_time || !h.close_time) return `${day}: Cerrado`
     return `${day}: ${h.open_time.substring(0, 5)}–${h.close_time.substring(0, 5)}`
   }).join(' | ')
@@ -82,7 +82,7 @@ function openDaysLabel(hoursData) {
   if (!hoursData || hoursData.length === 0) return 'lunes a viernes de 08:00 a 15:30'
   const openRows = hoursData.filter(h => h.open_time && h.close_time)
   if (openRows.length === 0) return '(sin horario configurado)'
-  const dayNames = openRows.map(r => BH_DAYS_ES[r.day_of_week]?.toLowerCase() || `día ${r.day_of_week}`)
+  const dayNames = openRows.map(r => (r.day_name || BH_DAYS_ES[r.day_of_week] || `día ${r.day_of_week}`).toLowerCase())
   const daysStr = dayNames.length === 1
     ? dayNames[0]
     : `${dayNames[0]} a ${dayNames[dayNames.length - 1]}`

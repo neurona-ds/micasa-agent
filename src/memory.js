@@ -340,7 +340,7 @@ async function getCustomerAddress(phone) {
 async function getBusinessHours() {
   const { data, error } = await supabase
     .from('business_hours')
-    .select('day_of_week, open_time, close_time')
+    .select('day_of_week, day_name, open_time, close_time')
     .order('day_of_week')
 
   if (error) {
