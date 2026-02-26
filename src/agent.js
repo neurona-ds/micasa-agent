@@ -405,7 +405,8 @@ function extractOrderDataForZoho(summaryMsg, history, phone, name, storedAddress
     })
     .map(l =>
       l
-        .replace(/^\s*[-•]\s*/, '') // strip leading dash or bullet
+        .replace(/^\s*[-•]\s*/, '')                                                  // strip leading dash or bullet
+        .replace(/^(?:[\u{1F000}-\u{1FFFF}]|[\u{2600}-\u{27BF}])+\s*/u, '- ')      // replace leading emoji with dash
         .trim()
     )
     .filter(Boolean)
