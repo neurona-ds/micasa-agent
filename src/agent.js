@@ -965,7 +965,7 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       // to an older session's summary with wrong totals and dates.
       const allAssistantMsgs = [...history].filter(h => h.role === 'assistant')
       const orderSummaryMsg  = [...allAssistantMsgs].reverse().find(
-        m => /\bTOTAL\b/i.test(m.message) && /envío|subtotal/i.test(m.message)
+        m => /\bTOTAL[:\s]+\$[\d.]+/i.test(m.message) && /[Ee]nv[ií]o[:\s]+[\$G]/i.test(m.message)
       )
 
       if (orderSummaryMsg) {
@@ -1020,7 +1020,7 @@ async function triggerZohoOnPayment(customerPhone, customerName) {
 
     const allAssistantMsgs = history.filter(h => h.role === 'assistant')
     const orderSummaryMsg  = [...allAssistantMsgs].reverse().find(
-      m => /\bTOTAL\b/i.test(m.message) && /envío|subtotal/i.test(m.message)
+      m => /\bTOTAL[:\s]+\$[\d.]+/i.test(m.message) && /[Ee]nv[ií]o[:\s]+[\$G]/i.test(m.message)
     )
 
     if (!orderSummaryMsg) {
