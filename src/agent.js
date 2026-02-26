@@ -363,11 +363,12 @@ function extractOrderDataForZoho(summaryMsg, history, phone, name, storedAddress
   const totalMatch = text.match(/\bTOTAL\b[:\s]+\$?([\d,.]+)/i)
   const total = totalMatch ? parseFloat(totalMatch[1].replace(',', '.')) : null
 
-  // Delivery cost — take the LAST occurrence of "Envío: $X.XX"
+  // Delivery cost — take the LAST occurrence of "Envío: $X.XX" or "Envío: GRATIS" (→ 0)
   const deliveryMatches = [...text.matchAll(/Envío[:\s]+\$?([\d,.]+)/gi)]
+  const isGratis = /Envío[:\s]+GRATIS/i.test(text)
   const deliveryCost = deliveryMatches.length > 0
     ? parseFloat(deliveryMatches[deliveryMatches.length - 1][1].replace(',', '.'))
-    : null
+    : (isGratis ? 0 : null)
 
   // Address — 3-layer fallback (most → least reliable):
   //   1. storedAddress: geocoded by Google Maps, saved to customers table at query time
@@ -444,13 +445,13 @@ function extractOrderDataForZoho(summaryMsg, history, phone, name, storedAddress
 
   const itemsText = itemLines.join('\n')
 
-  // Cantidad — only for almuerzo orders. Extract directly from itemsText since
-  // we're working on the summary message where the quantity is explicit.
-  // e.g. "1 Almuerzo del día..." → 1, "2 Almuerzos..." → 2
+  // Cantidad — for almuerzo orders (word "almuerzo" OR "Menú del Día").
+  // Extract quantity from the × notation or leading number.
+  // e.g. "4 × Menú del Día Lunes" → 4, "1 Almuerzo del día..." → 1
   let cantidad = null
-  if (/almuerzo/i.test(itemsText)) {
-    const cantMatch = itemsText.match(/(\d+)\s*[xX×]?\s*almuerzo/i)
-      || itemsText.match(/^[-•]?\s*(\d+)\s+almuerzo/im)
+  if (/almuerzo|men[uú]\s+del\s+d[ií]a/i.test(itemsText)) {
+    const cantMatch = itemsText.match(/(\d+)\s*[xX×]\s*(?:almuerzo|men[uú])/i)
+      || itemsText.match(/^[-•]?\s*(\d+)\s+(?:almuerzo|men[uú])/im)
     cantidad = cantMatch ? parseInt(cantMatch[1]) : 1
   }
 
