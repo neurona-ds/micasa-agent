@@ -457,7 +457,9 @@ function buildSystemPrompt(config, products, deliveryZones, deliveryTiers, weekA
   // Human-readable day name for today, used in the HORARIO DE HOY line below
   const todayDayName = (businessHours?.find(h => h.day_of_week === now.getDay())?.day_name)
     || BH_DAYS_ES[now.getDay()] || 'Hoy'
-  const todayHoursStr = todaySched ? `${openT} a ${closeT}` : 'Cerrado'
+  // openT/closeT already carry the hardcoded '08:00'/'15:30' fallback via ??
+  // so todayHoursStr is always a valid time range even when the DB is unavailable.
+  const todayHoursStr = `${openT} a ${closeT}`
 
   return `
 FECHA Y HORA ACTUAL:
