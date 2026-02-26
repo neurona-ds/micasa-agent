@@ -187,9 +187,14 @@ async function createZohoDeliveryRecord(orderData) {
   // en-CA locale produces YYYY-MM-DD format directly, no splitting needed.
   const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Guayaquil' })
 
+  // For scheduled (future) orders, Fecha_de_Envio should be the requested delivery date,
+  // not today. extractOrderDataForZoho populates scheduledDate when "📅 Entrega programada:"
+  // is found in the order summary; it's null for immediate orders.
+  const deliveryDate = orderData.scheduledDate || today
+
   const record = {
-    // Record display name
-    Name:               `Pedido - ${contact.name} - ${today}`,
+    // Record display name — uses delivery date so it's meaningful at a glance
+    Name:               `Pedido - ${contact.name} - ${deliveryDate}`,
 
     // Contact lookup — field API name: "Cliente"
     Cliente:            { id: contact.id },
@@ -213,8 +218,8 @@ async function createZohoDeliveryRecord(orderData) {
     // Status — always "Pendiente de Pago" on creation; human updates to "Pago Confirmado"
     Estado:             'Pendiente de Pago',
 
-    // Delivery date — defaulting to today; human can adjust if needed
-    Fecha_de_Envio:     today
+    // Delivery date — scheduled date when provided, today for immediate orders
+    Fecha_de_Envio:     deliveryDate
   }
 
   // ── Step 3: POST the record ───────────────────────────────────────────────

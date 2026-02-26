@@ -257,6 +257,37 @@ function detectAlmuerzoQty(history) {
 // ─── Zoho order-data extraction helpers ───────────────────────────────────────
 
 /**
+ * Parse a Spanish date string like "lunes 2 de marzo" or "2 de marzo de 2026"
+ * into a YYYY-MM-DD string. Returns null if parsing fails.
+ * Used to convert "📅 Entrega programada: lunes 2 de marzo" into Zoho's Fecha_de_Envio.
+ */
+function parseScheduledDate(dateStr) {
+  const MONTHS = {
+    enero:1, febrero:2, marzo:3, abril:4, mayo:5, junio:6,
+    julio:7, agosto:8, septiembre:9, octubre:10, noviembre:11, diciembre:12
+  }
+  // Match: optional weekday, then "D de Mes" with optional "de YYYY"
+  const match = dateStr.match(/(\d{1,2})\s+de\s+([a-záéíóúüñ]+)(?:\s+de\s+(\d{4}))?/i)
+  if (!match) return null
+
+  const day       = parseInt(match[1])
+  const monthName = match[2].toLowerCase()
+  const yearStr   = match[3]
+  const month     = MONTHS[monthName]
+  if (!month) return null
+
+  const nowEc    = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Guayaquil' }))
+  const nowYear  = nowEc.getFullYear()
+  const nowMonth = nowEc.getMonth() + 1
+  // If year was explicit use it; otherwise if month is in the past it's next year
+  const year = yearStr
+    ? parseInt(yearStr)
+    : (month < nowMonth ? nowYear + 1 : nowYear)
+
+  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+}
+
+/**
  * Scan history backwards for the user message that came right after the bot
  * asked for "dirección completa 📍" — that's the raw customer address.
  */
@@ -329,6 +360,24 @@ function extractOrderDataForZoho(summaryMsg, history, phone, name, storedAddress
     ? turnoInMsg[1].trim()
     : extractTurnoFromHistory(history)
 
+  // Scheduled delivery date — present only for future-scheduled orders.
+  // Bot writes: "📅 Entrega programada: lunes 2 de marzo | Turno: 3:00 PM"
+  // Parse the Spanish date into YYYY-MM-DD for Zoho's Fecha_de_Envio.
+  // Also scan recent history in case the scheduled line is in a different message.
+  let scheduledDate = null
+  const scheduledInMsg = text.match(/📅\s*Entrega programada:\s*([^|\n]+)/i)
+  if (scheduledInMsg) {
+    scheduledDate = parseScheduledDate(scheduledInMsg[1].trim())
+  }
+  if (!scheduledDate) {
+    // Fallback: scan last 14 messages for the programada line
+    const recentMsgs = history.slice(-14)
+    for (const msg of [...recentMsgs].reverse()) {
+      const m = msg.message.match(/📅\s*Entrega programada:\s*([^|\n]+)/i)
+      if (m) { scheduledDate = parseScheduledDate(m[1].trim()); break }
+    }
+  }
+
   // Items: lines that represent order rows — clean and kitchen-ready for Notas_de_Cocina.
   // Bot formats items as:
   //   "1 × Churrasco de Pollo: $8.50"        (carta, × format)
@@ -357,7 +406,8 @@ function extractOrderDataForZoho(summaryMsg, history, phone, name, storedAddress
     deliveryCost,
     address,
     turno,
-    itemsText
+    itemsText,
+    scheduledDate   // YYYY-MM-DD or null (null = immediate order, use today)
   }
 }
 
