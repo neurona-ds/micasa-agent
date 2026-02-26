@@ -329,12 +329,14 @@ function extractAddressFromHistory(history) {
 }
 
 /**
- * Scan recent history for a turno mention (e.g. "Turno: 12:30" or "turno de las 1:30").
+ * Scan recent history for a turno/hora mention.
+ * Matches "Turno: 12:30" (almuerzo slots) or "Hora: 12:00" (carta scheduled orders).
  */
 function extractTurnoFromHistory(history) {
   const recent = history.slice(-14)
   for (const msg of [...recent].reverse()) {
-    const match = msg.message.match(/[Tt]urno[:\s]+([^\n,]+)/i)
+    const match = msg.message.match(/[Tt]urno[:\s]+([^\n,|]+)/i)
+      || msg.message.match(/[Hh]ora[:\s]+([^\n,|]+)/i)
     if (match) return match[1].trim()
     // bare time like "12:30" mentioned alongside turno context
     const timeMatch = msg.message.match(/\b(12:30|1:30|2:30|13:30|14:30)\b/)
@@ -379,8 +381,11 @@ function extractOrderDataForZoho(summaryMsg, history, phone, name, storedAddress
     || (addrInMsg ? addrInMsg[1].trim() : null)
     || extractAddressFromHistory(history)
 
-  // Turno: look for "Turno" in the summary message first
-  const turnoInMsg = text.match(/[Tt]urno[:\s]+([^\n,]+)/i)
+  // Turno/Hora: look in the summary message first.
+  // Almuerzos use "Turno: 12:30" (slot notation); carta orders use "Hora: 12:00" (exact time).
+  // Both are extracted the same way — zoho.js decides how to use the value based on orderType.
+  const turnoInMsg = text.match(/[Tt]urno[:\s]+([^\n,|]+)/i)
+    || text.match(/[Hh]ora[:\s]+([^\n,|]+)/i)
   const turno = turnoInMsg
     ? turnoInMsg[1].trim()
     : extractTurnoFromHistory(history)
@@ -455,6 +460,11 @@ function extractOrderDataForZoho(summaryMsg, history, phone, name, storedAddress
     cantidad = cantMatch ? parseInt(cantMatch[1]) : 1
   }
 
+  // Order type: drives Horario_de_Entrega logic in zoho.js.
+  // Almuerzo orders have "almuerzo" or "Menú del Día" in the items block;
+  // everything else (fanesca, churrasco, carta items) is 'carta'.
+  const orderType = /almuerzo|men[uú]\s+del\s+d[ií]a/i.test(itemsText) ? 'almuerzo' : 'carta'
+
   return {
     phone,
     customerName: name || phone,
@@ -464,7 +474,8 @@ function extractOrderDataForZoho(summaryMsg, history, phone, name, storedAddress
     turno,
     itemsText,
     scheduledDate,  // YYYY-MM-DD or null (null = immediate order, use today)
-    cantidad        // number or null (null = non-almuerzo order)
+    cantidad,       // number or null (null = non-almuerzo order)
+    orderType       // 'almuerzo' | 'carta' — used by zoho.js for Horario_de_Entrega
   }
 }
 
@@ -549,7 +560,7 @@ SI hay una indicación ⚠️ FUERA DE HORARIO al inicio de este prompt Y el cli
 → Ofrece SIEMPRE programar el pedido para el próximo día hábil dentro del horario de operación.
 → Calcula el siguiente día hábil tú mismo usando la fecha de hoy y díselo al cliente.
 → Pregunta: "¿A qué hora prefieres que llegue tu pedido? Podemos entregarlo entre las ${openT} y las ${closeT}."
-→ Cuando el cliente confirme la hora, inclúyela en el resumen del pedido así: "📅 Entrega programada: [día calculado] | Turno: [hora solicitada por el cliente]"
+→ Cuando el cliente confirme la hora, inclúyela en el resumen del pedido así: "📅 Entrega programada: [día calculado] | Hora: [hora solicitada por el cliente]"
 → Continúa con el flujo normal: dirección → resumen → ¿Confirmas tu pedido? → pago.
 → PROHIBIDO decir que no puedes tomar el pedido. SIEMPRE ofrece la opción de programarlo.
 → Si el cliente solo consulta el menú, precios u horarios (sin intención clara de ordenar) → NO menciones el horario de operación salvo que lo pregunte.

@@ -202,18 +202,28 @@ async function createZohoDeliveryRecord(orderData) {
     // Phone (stored directly on the record for quick access)
     Telefono:           orderData.phone,
 
-    // Order items — "Notas de Cocina" is the kitchen-facing notes field
-    Notas_de_Cocina:    orderData.itemsText || '',
+    // Order items — "Notas de Cocina" is the kitchen-facing notes field.
+    // For carta orders with a scheduled time, prepend the requested hour so the kitchen
+    // knows when to prepare — Horario_de_Entrega is always "Inmediato" for carta (no slot system).
+    Notas_de_Cocina: (orderData.orderType === 'carta' && orderData.turno)
+      ? `Hora solicitada: ${orderData.turno}\n${orderData.itemsText || ''}`
+      : (orderData.itemsText || ''),
 
     // Delivery address
     Direccion:          orderData.address   || '',
 
-    // Turno mapped to exact pick-list value: "Inmediato" | "12:30 a 1:30" | "1:30 a 2:30" | "2:30 a 3:30"
-    Horario_de_Entrega: mapTurnoToPickList(orderData.turno),
+    // Horario_de_Entrega pick-list:
+    //   Almuerzo orders → mapped slot: "Inmediato" | "12:30 a 1:30" | "1:30 a 2:30" | "2:30 a 3:30"
+    //   Carta orders    → always "Inmediato" (no slot system; requested time is in Notas_de_Cocina)
+    Horario_de_Entrega: (orderData.orderType === 'almuerzo')
+      ? mapTurnoToPickList(orderData.turno)
+      : 'Inmediato',
 
     // Financial fields
     Valor_Venta:        orderData.total        || 0,
     Costo_de_Envio:     orderData.deliveryCost ?? 0,
+    // Delivery cost at time of order — stored for comparison with actual charged amount
+    Envio_Cobrado:      orderData.deliveryCost ?? 0,
 
     // Status — always "Pendiente de Pago" on creation; human updates to "Pago Confirmado"
     Estado:             'Pendiente de Pago',
