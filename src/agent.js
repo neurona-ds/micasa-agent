@@ -750,7 +750,7 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     const currentCycle = await advanceCycleIfNeeded()
 
     // Fetch all data in parallel (history fetched BEFORE saving new message)
-    const [config, products, deliveryZones, deliveryTiers, almuerzoDeliveryTiers, weekAlmuerzos, paymentMethods, businessHours, history] = await Promise.all([
+    const [config, products, deliveryZones, deliveryTiers, almuerzoDeliveryTiers, weekAlmuerzos, paymentMethods, businessHours, history, storedGeo] = await Promise.all([
       getAllConfig(),
       getProducts(),
       getDeliveryZones(),
@@ -759,7 +759,8 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       getWeekAlmuerzos(currentCycle),
       getPaymentMethods(),
       getBusinessHours(),
-      getHistory(customerPhone)
+      getHistory(customerPhone),
+      getCustomerAddress(customerPhone).catch(() => null)
     ])
 
     const fullSystemPrompt = buildSystemPrompt(config, products, deliveryZones, deliveryTiers, weekAlmuerzos, paymentMethods, almuerzoDeliveryTiers, businessHours)
@@ -841,6 +842,13 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     // Must happen BEFORE messages.push() so the after-hours tag lands in the right message.
     const nowEc = nowInEcuador()
     const isRestaurantOpen = checkIsOpen(businessHours, nowEc)
+
+    // Inject stored address into context so Claude always knows what's on file in DB.
+    // Without this, when a customer says "use my last address", Claude guesses from
+    // conversation history and can pick an old address from a previous order.
+    if (storedGeo?.address) {
+      enrichedMessage += `\n\n[SISTEMA: Dirección registrada en DB para este cliente: "${storedGeo.address}". Cuando el cliente pida usar su dirección registrada/anterior, usa EXACTAMENTE esta.]`
+    }
 
     // Inject [SISTEMA] after-hours tag directly into the user message so Claude sees
     // the constraint inline — more reliable than relying on the distant system-prompt flag.
@@ -972,13 +980,13 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       /\bTOTAL[:\s]+\$[\d.]+/i.test(strippedReply) &&
       /[Ee]nv[ií]o[:\s]+[\$G]/i.test(strippedReply)
     ) {
-      const geoSnap = await getCustomerAddress(customerPhone).catch(() => null)
+      // storedGeo already fetched at top of processMessage — reuse, no extra DB call
       const snap = extractOrderDataForZoho(
         { message: replyText },
         history,
         customerPhone,
         customerName,
-        geoSnap?.address || null
+        storedGeo?.address || null
       )
       savePendingOrder(customerPhone, snap).catch(err =>
         console.error('savePendingOrder error (non-blocking):', err.message)
