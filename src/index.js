@@ -228,9 +228,8 @@ app.post('/webhook', async (req, res) => {
         await notifyHandoff(customerPhone, customerName, 'PAYMENT', 'Cliente envió comprobante de pago')
         triggerZohoOnPayment(customerPhone, customerName)
       } else {
-        // Follow-up image — order already processed, just notify admin silently
-        console.log(`MEDIA follow-up (no pending order) from ${customerPhone} — forwarding to admin only`)
-        await notifyHandoff(customerPhone, customerName, 'PAYMENT', 'Cliente envió imagen adicional (sin pedido pendiente)')
+        // Follow-up image — order already processed, ignore silently
+        console.log(`MEDIA follow-up (no pending order) from ${customerPhone} — ignored`)
       }
 
       return res.status(200).json({ status: 'media_handoff' })
