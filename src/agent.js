@@ -270,27 +270,43 @@ function detectAlmuerzoQty(history) {
 function parseScheduledDate(dateStr) {
   const MONTHS = {
     enero:1, febrero:2, marzo:3, abril:4, mayo:5, junio:6,
-    julio:7, agosto:8, septiembre:9, octubre:10, noviembre:11, diciembre:12
+    julio:7, agosto:8, septiembre:9, octubre:10, noviembre:11, diciembre:12,
+    // abbreviated forms
+    ene:1, feb:2, mar:3, abr:4, may:5, jun:6,
+    jul:7, ago:8, sep:9, oct:10, nov:11, dic:12
   }
-  // Match: optional weekday, then "D de Mes" with optional "de YYYY"
-  const match = dateStr.match(/(\d{1,2})\s+de\s+([a-záéíóúüñ]+)(?:\s+de\s+(\d{4}))?/i)
-  if (!match) return null
-
-  const day       = parseInt(match[1])
-  const monthName = match[2].toLowerCase()
-  const yearStr   = match[3]
-  const month     = MONTHS[monthName]
-  if (!month) return null
 
   const nowEc    = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Guayaquil' }))
   const nowYear  = nowEc.getFullYear()
   const nowMonth = nowEc.getMonth() + 1
-  // If year was explicit use it; otherwise if month is in the past it's next year
-  const year = yearStr
-    ? parseInt(yearStr)
-    : (month < nowMonth ? nowYear + 1 : nowYear)
 
-  return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+  // Primary: "D de Mes" or "D de Mes de YYYY"
+  const matchFull = dateStr.match(/(\d{1,2})\s+de\s+([a-záéíóúüñ]+)(?:\s+de\s+(\d{4}))?/i)
+  if (matchFull) {
+    const day   = parseInt(matchFull[1])
+    const month = MONTHS[matchFull[2].toLowerCase()]
+    if (month) {
+      const year = matchFull[3]
+        ? parseInt(matchFull[3])
+        : (month < nowMonth ? nowYear + 1 : nowYear)
+      return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+    }
+  }
+
+  // Fallback: "D Mes" or "D Mes YYYY" without "de" (e.g. "27 feb", "viernes 27 feb 2026")
+  const matchShort = dateStr.match(/(\d{1,2})\s+([a-záéíóúüñ]{3,})(?:\s+(\d{4}))?/i)
+  if (matchShort) {
+    const day   = parseInt(matchShort[1])
+    const month = MONTHS[matchShort[2].toLowerCase()]
+    if (month) {
+      const year = matchShort[3]
+        ? parseInt(matchShort[3])
+        : (month < nowMonth ? nowYear + 1 : nowYear)
+      return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`
+    }
+  }
+
+  return null
 }
 
 /**
@@ -378,12 +394,27 @@ function extractOrderDataForZoho(summaryMsg, history, phone, name, storedAddress
     scheduledDate = parseScheduledDate(scheduledInMsg[1].trim())
   }
   if (!scheduledDate) {
-    // Fallback: scan last 14 messages for the programada line (strip markdown there too)
+    // Fallback 1: scan last 14 messages for the programada line (strip markdown there too)
     const recentMsgs = history.slice(-14)
     for (const msg of [...recentMsgs].reverse()) {
       const msgText = msg.message.replace(/\*+/g, '')
       const m = msgText.match(/📅\s*Entrega programada:\s*([^|\n]+)/i)
       if (m) { scheduledDate = parseScheduledDate(m[1].trim()); break }
+    }
+  }
+
+  if (!scheduledDate) {
+    // Fallback 2: extract date embedded in item name (e.g. "Almuerzo del día viernes 27 feb")
+    // Scan summary + recent history for "del día [weekday] D [Mes]" or "para el [weekday] D [Mes]"
+    const allText = [text, ...history.slice(-14).map(m => m.message.replace(/\*+/g, ''))].join('\n')
+    const embeddedDate = allText.match(
+      /(?:del\s+d[ií]a|para\s+el)\s+(?:\w+\s+)?(\d{1,2})\s+(?:de\s+)?([a-záéíóúüñ]{3,})(?:\s+(?:de\s+)?(\d{4}))?/i
+    )
+    if (embeddedDate) {
+      const raw = embeddedDate[3]
+        ? `${embeddedDate[1]} ${embeddedDate[2]} ${embeddedDate[3]}`
+        : `${embeddedDate[1]} ${embeddedDate[2]}`
+      scheduledDate = parseScheduledDate(raw)
     }
   }
 
@@ -510,6 +541,13 @@ SI hay una indicación ⚠️ FUERA DE HORARIO al inicio de este prompt Y el cli
 → Continúa con el flujo normal: dirección → resumen → ¿Confirmas tu pedido? → pago.
 → PROHIBIDO decir que no puedes tomar el pedido. SIEMPRE ofrece la opción de programarlo.
 → Si el cliente solo consulta el menú, precios u horarios (sin intención clara de ordenar) → NO menciones el horario de operación salvo que lo pregunte.
+
+REGLA CRÍTICA — PEDIDOS PARA FECHA FUTURA (DENTRO O FUERA DE HORARIO):
+Cuando el cliente pida para un día diferente a HOY (${todayStr}), ya sea mañana, el viernes, la próxima semana, etc.:
+→ En el resumen del pedido SIEMPRE incluye esta línea: "📅 **Entrega programada:** [nombre del día] [D] de [Mes]"
+→ Ejemplo correcto: "📅 **Entrega programada:** viernes 27 de febrero"
+→ Esta línea es OBLIGATORIA — nunca la omitas aunque el día ya esté mencionado en el nombre del ítem.
+→ Sin esta línea, el sistema no puede registrar la fecha de entrega correctamente.
 
 NOTA ALMUERZOS FIN DE SEMANA:
 Si hoy es sábado o domingo, el menú mostrado corresponde a la PRÓXIMA semana (Lunes a Viernes).
