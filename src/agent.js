@@ -454,6 +454,10 @@ function buildSystemPrompt(config, products, deliveryZones, deliveryTiers, weekA
   const todaySched  = getTodaySchedule(businessHours, now)
   const openT  = todaySched?.openTime  ?? '08:00'
   const closeT = todaySched?.closeTime ?? '15:30'
+  // Human-readable day name for today, used in the HORARIO DE HOY line below
+  const todayDayName = (businessHours?.find(h => h.day_of_week === now.getDay())?.day_name)
+    || BH_DAYS_ES[now.getDay()] || 'Hoy'
+  const todayHoursStr = todaySched ? `${openT} a ${closeT}` : 'Cerrado'
 
   return `
 FECHA Y HORA ACTUAL:
@@ -489,6 +493,9 @@ IMPORTANTE: "menú de hoy", "menú del día", "qué hay hoy" siempre se refiere 
 
 HORARIO COMPLETO:
 ${scheduleStr}
+
+HORARIO DE HOY (${todayDayName}): ${todayHoursStr}
+→ Cuando el cliente pregunte a qué hora pueden entregar HOY, usa SIEMPRE el HORARIO DE HOY. Nunca uses el horario general si el horario de hoy es diferente.
 
 REGLA — HORARIO DE OPERACIÓN:
 El restaurante opera ${openLabel} exclusivamente.
