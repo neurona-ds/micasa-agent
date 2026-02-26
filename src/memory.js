@@ -301,6 +301,39 @@ async function getDeliveryZoneByAddress(customerAddress) {
   }
 }
 
+// Save the geocoded delivery address + zone + distance for a customer.
+// Called right after Google Maps geocoding succeeds so we always have clean,
+// structured data available for Zoho — no need to parse conversation text.
+async function saveDeliveryAddress(phone, formattedAddress, zone, distanceKm) {
+  const { error } = await supabase
+    .from('customers')
+    .update({
+      last_delivery_address: formattedAddress,
+      last_delivery_zone: zone,
+      last_delivery_distance_km: distanceKm
+    })
+    .eq('phone', phone)
+
+  if (error) console.error('Error saving delivery address:', error)
+}
+
+// Get the last geocoded delivery data stored for a customer.
+// Returns { address, zone, distanceKm } or null if nothing stored yet.
+async function getCustomerAddress(phone) {
+  const { data, error } = await supabase
+    .from('customers')
+    .select('last_delivery_address, last_delivery_zone, last_delivery_distance_km')
+    .eq('phone', phone)
+    .single()
+
+  if (error || !data || !data.last_delivery_address) return null
+  return {
+    address: data.last_delivery_address,
+    zone: data.last_delivery_zone,
+    distanceKm: data.last_delivery_distance_km
+  }
+}
+
 // Check if bot is paused for a customer
 async function isBotPaused(phone) {
   const { data, error } = await supabase
@@ -350,5 +383,7 @@ module.exports = {
   getPaymentMethods,
   isBotPaused,
   pauseBot,
-  resumeBot
+  resumeBot,
+  saveDeliveryAddress,
+  getCustomerAddress
 }

@@ -1,5 +1,5 @@
 const Anthropic = require('@anthropic-ai/sdk')
-const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getAlmuerzoDeliveryTiers, getDeliveryZoneByAddress, advanceCycleIfNeeded, getWeekAlmuerzos, getPaymentMethods } = require('./memory')
+const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getAlmuerzoDeliveryTiers, getDeliveryZoneByAddress, advanceCycleIfNeeded, getWeekAlmuerzos, getPaymentMethods, saveDeliveryAddress, getCustomerAddress } = require('./memory')
 const { createZohoDeliveryRecord } = require('./zoho')
 const path = require('path')
 require('dotenv').config({ path: path.resolve(__dirname, '../.env'), override: true })
@@ -224,7 +224,8 @@ function extractTurnoFromHistory(history) {
  * @param {string} name        - customer name from WATI
  * @returns {Object} orderData ready for createZohoDeliveryRecord()
  */
-function extractOrderDataForZoho(summaryMsg, history, phone, name) {
+// storedAddress: geocoded address saved to DB when Maps API was called — most reliable source.
+function extractOrderDataForZoho(summaryMsg, history, phone, name, storedAddress = null) {
   const text = summaryMsg.message
 
   // Total — use word boundary to avoid matching "Subtotal"
@@ -237,11 +238,14 @@ function extractOrderDataForZoho(summaryMsg, history, phone, name) {
     ? parseFloat(deliveryMatches[deliveryMatches.length - 1][1].replace(',', '.'))
     : null
 
-  // Address: look for "📍 ..." line in the summary message first
+  // Address — 3-layer fallback (most → least reliable):
+  //   1. storedAddress: geocoded by Google Maps, saved to customers table at query time
+  //   2. 📍 line in the order summary message (bot instructed to always include it)
+  //   3. History scan: find user reply after bot asked "dirección completa 📍" (fragile, last resort)
   const addrInMsg = text.match(/📍\s*([^\n]+)/)
-  const address = addrInMsg
-    ? addrInMsg[1].trim()
-    : extractAddressFromHistory(history)
+  const address = storedAddress
+    || (addrInMsg ? addrInMsg[1].trim() : null)
+    || extractAddressFromHistory(history)
 
   // Turno: look for "Turno" in the summary message first
   const turnoInMsg = text.match(/[Tt]urno[:\s]+([^\n,]+)/i)
@@ -580,6 +584,12 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
 
         enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección geocodificada → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente.]`
         console.log(`Zone injected: Zone ${zone} (${distanceKm}km)`)
+
+        // Persist geocoded result to customers table — primary address source for Zoho.
+        // Non-blocking: a DB failure here must never break the conversation flow.
+        saveDeliveryAddress(customerPhone, formattedAddress, zone, distanceKm).catch(err =>
+          console.warn('saveDeliveryAddress failed (non-blocking):', err.message)
+        )
       } else {
         console.warn(`Zone calculation failed — Claude will estimate from address text`)
       }
@@ -694,7 +704,9 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       const orderSummaryMsg  = [...allAssistantMsgs].reverse().find(m => m.message.includes('Confirmas tu pedido'))
 
       if (orderSummaryMsg) {
-        const orderData = extractOrderDataForZoho(orderSummaryMsg, history, customerPhone, customerName)
+        // Pull stored geocoded address (primary source) — falls back inside extractOrderDataForZoho
+        const geoData = await getCustomerAddress(customerPhone).catch(() => null)
+        const orderData = extractOrderDataForZoho(orderSummaryMsg, history, customerPhone, customerName, geoData?.address || null)
         console.log('Zoho: firing delivery record creation for', customerPhone, orderData)
         createZohoDeliveryRecord(orderData).catch(err =>
           console.error('Zoho delivery record failed (non-blocking):', err.message)
@@ -735,7 +747,12 @@ async function triggerZohoOnPayment(customerPhone, customerName) {
   if (!process.env.ZOHO_CLIENT_ID) return  // Zoho not configured — skip silently
 
   try {
-    const history = await getHistory(customerPhone)
+    // Fetch history and stored geocoded address in parallel
+    const [history, geoData] = await Promise.all([
+      getHistory(customerPhone),
+      getCustomerAddress(customerPhone).catch(() => null)
+    ])
+
     const allAssistantMsgs = history.filter(h => h.role === 'assistant')
     const orderSummaryMsg  = [...allAssistantMsgs].reverse().find(m => m.message.includes('Confirmas tu pedido'))
 
@@ -744,7 +761,9 @@ async function triggerZohoOnPayment(customerPhone, customerName) {
       return
     }
 
-    const orderData = extractOrderDataForZoho(orderSummaryMsg, history, customerPhone, customerName)
+    // Pass stored geocoded address as primary source — extractOrderDataForZoho falls back
+    // to 📍 in summary, then history scan if geoData is null
+    const orderData = extractOrderDataForZoho(orderSummaryMsg, history, customerPhone, customerName, geoData?.address || null)
     console.log('Zoho: firing delivery record (payment image received) for', customerPhone, orderData)
 
     createZohoDeliveryRecord(orderData).catch(err =>
