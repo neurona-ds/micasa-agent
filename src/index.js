@@ -55,6 +55,21 @@ app.post('/webhook', async (req, res) => {
       return res.status(200).json({ status: 'ignored' })
     }
 
+    // ── STALE WEBHOOK FILTER ─────────────────────────────────────────────────
+    // WATI queues webhooks while the server is down (Railway redeploy) and
+    // replays them all at once when it comes back. Since processedMsgIds is
+    // in-memory, those old messages appear fresh after a restart.
+    // Fix: reject any webhook whose message timestamp is older than 5 minutes.
+    // Real messages arrive within seconds; replays are hours/days old.
+    const msgTimestamp = body.timestamp ? parseInt(body.timestamp) * 1000 : null
+    if (msgTimestamp) {
+      const ageSeconds = Math.round((Date.now() - msgTimestamp) / 1000)
+      if (ageSeconds > 300) { // older than 5 minutes
+        console.log(`Stale webhook rejected: age=${ageSeconds}s msgId=${body.whatsappMessageId || 'none'} created=${body.created}`)
+        return res.status(200).json({ status: 'stale_webhook_ignored' })
+      }
+    }
+
     // Deduplicate by whatsappMessageId — WATI fires duplicates for the same event
     const waMsgId = body.whatsappMessageId || null
     if (waMsgId) {
