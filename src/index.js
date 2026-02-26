@@ -89,6 +89,15 @@ app.post('/webhook', async (req, res) => {
     // below catch bot echoes and delivery/read receipts that sneak through
     // with eventType:"message" — those were causing unsolicited bot replies.
 
+    // Block non-WhatsApp channels — WATI routes Facebook Messenger, Instagram, etc.
+    // through the same webhook. sourceType 7 = Facebook Messenger.
+    // We only respond to WhatsApp (sourceType 0 or absent).
+    const sourceType = body.sourceType
+    if (sourceType === 7) {
+      console.log(`Ignoring non-WhatsApp message: sourceType=${sourceType} sourceUrl=${body.sourceUrl || 'null'}`)
+      return res.status(200).json({ status: 'ignored_non_whatsapp' })
+    }
+
     const eventType = (body.eventType || '').toLowerCase()
     if (eventType !== 'message') {
       // Catches: empty string, "sentMessageStatus", "delivery", "read", etc.
