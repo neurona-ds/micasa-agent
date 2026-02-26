@@ -196,10 +196,14 @@ app.post('/webhook', async (req, res) => {
       return res.status(200).json({ status: 'rate_limited' })
     }
 
-    // Rate limit: enforce minimum 8 seconds between messages per phone
+    // Rate limit: enforce minimum 3 seconds between messages per phone.
+    // Threshold is intentionally short — the waMsgId dedup above already catches
+    // true duplicate webhooks. This only guards against rare WATI duplicates that
+    // arrive with a different waMsgId. 3 s is enough for that case while still
+    // letting customers reply quickly after receiving the bot's response.
     const last = lastProcessed.get(customerPhone) || 0
     const elapsed = Date.now() - last
-    if (elapsed < 8000) {
+    if (elapsed < 3000) {
       console.log(`Too soon for ${customerPhone} (${elapsed}ms since last) — ignoring`)
       return res.status(200).json({ status: 'rate_limited' })
     }
@@ -236,9 +240,10 @@ app.post('/webhook', async (req, res) => {
       return res.status(200).json({ status: 'ignored' })
     }
 
-    // Mark as processing — block any concurrent webhook for this phone
+    // Mark as processing — block any concurrent webhook for this phone.
+    // lastProcessed is stamped AFTER the reply is sent (see below) so the
+    // 3-second cooldown starts when the customer can actually see the response.
     processingPhones.add(customerPhone)
-    lastProcessed.set(customerPhone, Date.now())
 
     // Deterministic override: weekend almuerzo ORDER → immediate HANDOFF (no Claude call needed)
     const dow = new Date().getDay() // 0=Sun, 6=Sat
@@ -300,6 +305,11 @@ app.post('/webhook', async (req, res) => {
     } else if (needsHandoff) {
       await notifyHandoff(customerPhone, customerName, 'GENERAL', customerMessage)
     }
+
+    // Stamp lastProcessed NOW — after the reply has been sent — so the 3-second
+    // cooldown counts from when the customer can see the bot's response, not from
+    // when the incoming webhook first arrived.
+    lastProcessed.set(customerPhone, Date.now())
 
     res.status(200).json({ status: 'ok' })
 
