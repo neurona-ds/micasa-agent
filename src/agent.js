@@ -249,11 +249,18 @@ function extractOrderDataForZoho(summaryMsg, history, phone, name) {
     ? turnoInMsg[1].trim()
     : extractTurnoFromHistory(history)
 
-  // Items: lines containing the multiplication sign (order rows)
-  const itemLines = text.split('\n').filter(l => l.includes('×') || /\d\s*x\s+/i.test(l))
+  // Items: lines that represent order rows.
+  // Bot formats items as:
+  //   "1 × Churrasco de Pollo: $8.50"   (carta, × format)
+  //   "- 1 Almuerzo del día (...): $5.50"  (almuerzo, dash-number format)
+  // Exclude delivery/subtotal/total lines so the fallback never captures them.
+  const itemLines = text.split('\n').filter(l => {
+    if (/envío|subtotal|\bTOTAL\b/i.test(l)) return false
+    return l.includes('×') || /\d\s*x\s+/i.test(l) || /^\s*[-•]\s*\d+\s+/i.test(l)
+  })
   const itemsText = itemLines.length > 0
     ? itemLines.join('\n').trim()
-    : text.split(/Subtotal|─{3,}/)[0].trim()   // fallback: everything before the totals block
+    : ''   // return empty rather than dumping the entire message as a fallback
 
   return {
     phone,
@@ -453,6 +460,7 @@ d) Si es ENTREGA A DOMICILIO:
    - Si NO tienes dirección → pregunta EXACTAMENTE: "¿Me podrías dar tu dirección completa, referencia y ubicación si es posible? 📍" — NUNCA pidas "barrio" ni "sector".
    - Identifica la zona, calcula el costo de envío.
 e) Muestra resumen completo: ítems + precios + subtotal + costo de envío + TOTAL.
+   Si es delivery → incluye SIEMPRE la dirección del cliente en el resumen, en esta línea exacta: "📍 [dirección que el cliente proporcionó]" — esto es obligatorio para procesar el pedido.
    ⚠️ PROHIBIDO usar "delivery incluido", "con delivery", "precio con envío" o cualquier frase que sugiera que el delivery está incluido en el precio del plato.
    El costo de envío es SIEMPRE un cargo adicional y separado. Muéstralo así:
    "Envío: $1.50" — si tiene costo
