@@ -728,13 +728,17 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     )
 
     // Quick sanity check: is this message plausibly an address?
-    // Avoids geocoding short replies, turn-time answers, and single words.
+    // Avoids geocoding short replies, turn-time answers, and conversational sentences.
     const msgTrimmed = customerMessage.trim()
     const looksLikeAddress = (
       msgTrimmed.length >= 15 &&
+      msgTrimmed.split(/\s+/).length <= 12 &&  // real addresses are short; long sentences aren't addresses
+      !/^no\b/i.test(msgTrimmed) &&            // "no quiero..." / "no tengo..." → not an address
       !/^(domicilio|delivery|retiro|local|si|sí|no|ok|dale|listo|claro|perfecto|turno|quiero|para)$/i.test(msgTrimmed) &&
-      !/^\d{1,2}:\d{2}/.test(msgTrimmed) &&    // "12:30", "1:30 – 2:30"
-      !/^turno/i.test(msgTrimmed)              // "turno de las..."
+      !/^\d{1,2}:\d{2}/.test(msgTrimmed) &&   // "12:30", "1:30 – 2:30"
+      !/^turno/i.test(msgTrimmed) &&           // "turno de las..."
+      // Spanish conversational verbs that never appear in addresses:
+      !/\b(quiero|ustedes|abren|cierran|pueden|puedo|tenemos|tengo|tienen|cuándo|cuando|cuánto|cuanto|están|abre|cierra|pronto|dijiste|dices|dijeron)\b/i.test(msgTrimmed)
     )
 
     let enrichedMessage = customerMessage
