@@ -2,7 +2,7 @@ const path = require('path')
 require('dotenv').config({ path: path.resolve(__dirname, '../.env'), override: true })
 const express = require('express')
 const axios = require('axios')
-const { processMessage, triggerZohoOnPayment } = require('./agent')
+const { processMessage, triggerZohoOnPayment, hasPendingOrder } = require('./agent')
 const { isBotPaused, pauseBot, resumeBot } = require('./memory')
 
 const app = express()
@@ -212,18 +212,26 @@ app.post('/webhook', async (req, res) => {
     const messageType = (body.type || 'text').toLowerCase()
     const isMediaMessage = ['image', 'document', 'audio', 'video'].includes(messageType)
 
-    // If customer sent a photo/media — treat as payment confirmation
+    // If customer sent a photo/media — treat as payment confirmation only if there
+    // is an active pending order. Subsequent images (e.g. clarifications) are
+    // forwarded to the admin without re-triggering the full payment flow.
     if (isMediaMessage) {
       console.log(`MEDIA MESSAGE received from ${customerPhone} — type: ${messageType}`)
 
-      const ackMessage =
-        '¡Gracias! 📲 Recibimos tu comprobante de pago. Estamos verificando tu transferencia y en breve procesamos tu pedido. ¡Que disfrutes tu comida! 💛'
+      const hasPending = await hasPendingOrder(customerPhone)
 
-      await sendWatiMessage(customerPhone, ackMessage)
-      await notifyHandoff(customerPhone, customerName, 'PAYMENT', 'Cliente envió comprobante de pago')
-
-      // Fire Zoho record creation non-blocking — image = payment proof received
-      triggerZohoOnPayment(customerPhone, customerName)
+      if (hasPending) {
+        // First payment image — active order in progress
+        const ackMessage =
+          '¡Gracias! 📲 Recibimos tu comprobante de pago. Estamos verificando tu transferencia y en breve procesamos tu pedido. ¡Que disfrutes tu comida! 💛'
+        await sendWatiMessage(customerPhone, ackMessage)
+        await notifyHandoff(customerPhone, customerName, 'PAYMENT', 'Cliente envió comprobante de pago')
+        triggerZohoOnPayment(customerPhone, customerName)
+      } else {
+        // Follow-up image — order already processed, just notify admin silently
+        console.log(`MEDIA follow-up (no pending order) from ${customerPhone} — forwarding to admin only`)
+        await notifyHandoff(customerPhone, customerName, 'PAYMENT', 'Cliente envió imagen adicional (sin pedido pendiente)')
+      }
 
       return res.status(200).json({ status: 'media_handoff' })
     }

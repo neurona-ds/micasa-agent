@@ -1060,27 +1060,14 @@ async function triggerZohoOnPayment(customerPhone, customerName) {
   if (!process.env.ZOHO_CLIENT_ID) return  // Zoho not configured — skip silently
 
   try {
-    // Primary: read pre-saved order snapshot from DB.
-    // Fallback: history scan (safety net for deploys mid-order or DB write failures).
-    let orderData = await getPendingOrder(customerPhone).catch(() => null)
+    // Only fire if there is an active pending_order in DB.
+    // null means the order was already processed (clearPendingOrder already ran) —
+    // additional images from the same customer are follow-ups handled by the human admin.
+    const orderData = await getPendingOrder(customerPhone).catch(() => null)
 
-    if (orderData) {
-      console.log('Zoho: using pending_order from DB for', customerPhone, orderData)
-    } else {
-      console.warn('Zoho: no pending_order in DB — falling back to history scan for', customerPhone)
-      const [history, geoData] = await Promise.all([
-        getHistory(customerPhone),
-        getCustomerAddress(customerPhone).catch(() => null)
-      ])
-      const allAssistantMsgs = history.filter(h => h.role === 'assistant')
-      const orderSummaryMsg  = [...allAssistantMsgs].reverse().find(
-        m => /\bTOTAL[:\s]+\$[\d.]+/i.test(m.message) && /[Ee]nv[ií]o[:\s]+[\$G]/i.test(m.message)
-      )
-      if (!orderSummaryMsg) {
-        console.warn('Zoho: no order summary found in history for', customerPhone, '— skipping')
-        return
-      }
-      orderData = extractOrderDataForZoho(orderSummaryMsg, history, customerPhone, customerName, geoData?.address || null)
+    if (!orderData) {
+      console.log('Zoho: no pending_order for', customerPhone, '— image is a follow-up, skipping Zoho')
+      return
     }
 
     console.log('Zoho: firing delivery record (payment image received) for', customerPhone, orderData)
@@ -1093,4 +1080,4 @@ async function triggerZohoOnPayment(customerPhone, customerName) {
   }
 }
 
-module.exports = { processMessage, triggerZohoOnPayment }
+module.exports = { processMessage, triggerZohoOnPayment, hasPendingOrder: (phone) => getPendingOrder(phone).then(Boolean).catch(() => false) }
