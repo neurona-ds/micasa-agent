@@ -339,14 +339,16 @@ function extractTurnoFromHistory(history) {
  */
 // storedAddress: geocoded address saved to DB when Maps API was called — most reliable source.
 function extractOrderDataForZoho(summaryMsg, history, phone, name, storedAddress = null) {
-  const text = summaryMsg.message
+  // Strip bold/italic markdown from the raw message before all parsing so that
+  // patterns like "📅 **Entrega programada:**" match the same regex as plain text.
+  const text = summaryMsg.message.replace(/\*+/g, '')
 
   // Total — use word boundary to avoid matching "Subtotal"
-  const totalMatch = text.match(/\bTOTAL\b[:\s*]+\$?([\d,.]+)/i)
+  const totalMatch = text.match(/\bTOTAL\b[:\s]+\$?([\d,.]+)/i)
   const total = totalMatch ? parseFloat(totalMatch[1].replace(',', '.')) : null
 
   // Delivery cost — take the LAST occurrence of "Envío: $X.XX"
-  const deliveryMatches = [...text.matchAll(/Envío[:\s*]+\$?([\d,.]+)/gi)]
+  const deliveryMatches = [...text.matchAll(/Envío[:\s]+\$?([\d,.]+)/gi)]
   const deliveryCost = deliveryMatches.length > 0
     ? parseFloat(deliveryMatches[deliveryMatches.length - 1][1].replace(',', '.'))
     : null
@@ -368,7 +370,7 @@ function extractOrderDataForZoho(summaryMsg, history, phone, name, storedAddress
 
   // Scheduled delivery date — present only for future-scheduled orders.
   // Bot writes: "📅 Entrega programada: lunes 2 de marzo | Turno: 3:00 PM"
-  // Parse the Spanish date into YYYY-MM-DD for Zoho's Fecha_de_Envio.
+  // (markdown already stripped above so **bold** wrappers don't break the regex)
   // Also scan recent history in case the scheduled line is in a different message.
   let scheduledDate = null
   const scheduledInMsg = text.match(/📅\s*Entrega programada:\s*([^|\n]+)/i)
@@ -376,28 +378,33 @@ function extractOrderDataForZoho(summaryMsg, history, phone, name, storedAddress
     scheduledDate = parseScheduledDate(scheduledInMsg[1].trim())
   }
   if (!scheduledDate) {
-    // Fallback: scan last 14 messages for the programada line
+    // Fallback: scan last 14 messages for the programada line (strip markdown there too)
     const recentMsgs = history.slice(-14)
     for (const msg of [...recentMsgs].reverse()) {
-      const m = msg.message.match(/📅\s*Entrega programada:\s*([^|\n]+)/i)
+      const msgText = msg.message.replace(/\*+/g, '')
+      const m = msgText.match(/📅\s*Entrega programada:\s*([^|\n]+)/i)
       if (m) { scheduledDate = parseScheduledDate(m[1].trim()); break }
     }
   }
 
   // Items: lines that represent order rows — clean and kitchen-ready for Notas_de_Cocina.
   // Bot formats items as:
-  //   "1 × Churrasco de Pollo: $8.50"        (carta, × format)
-  //   "- 1 Almuerzo del día (...): $5.50"     (almuerzo, dash-number format)
-  // Exclude delivery/subtotal/total lines, strip markdown and leading punctuation.
+  //   "1 × Churrasco de Pollo: $8.50"          (carta, × format)
+  //   "- 1 Almuerzo del día (...): $5.50"       (almuerzo, dash-number format)
+  //   "🥩 Churrasco de Carne — $9.00"           (emoji + em-dash format)
+  // Exclude delivery/subtotal/total lines; markdown already stripped above.
   const itemLines = text.split('\n')
     .filter(l => {
       if (/envío|subtotal|\bTOTAL\b/i.test(l)) return false
-      return l.includes('×') || /\d\s*x\s+/i.test(l) || /^\s*[-•]\s*\d+\s+/i.test(l)
+      return (
+        l.includes('×') ||
+        /\d\s*x\s+/i.test(l) ||
+        /^\s*[-•]\s*\d+\s+/i.test(l) ||
+        /[–—]\s*\$[\d.]+/.test(l)        // em-dash / en-dash price format
+      )
     })
     .map(l =>
       l
-        .replace(/\*\*/g, '')       // strip bold markdown
-        .replace(/\*/g, '')         // strip italic markdown
         .replace(/^\s*[-•]\s*/, '') // strip leading dash or bullet
         .trim()
     )
