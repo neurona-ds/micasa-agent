@@ -334,6 +334,23 @@ async function getCustomerAddress(phone) {
   }
 }
 
+// Get weekly business hours — returns array of { day_of_week, open_time, close_time }
+// where day_of_week follows JS convention (0=Sun … 6=Sat).
+// open_time / close_time are "HH:MM:SS" strings from Postgres TIME, or null = closed that day.
+async function getBusinessHours() {
+  const { data, error } = await supabase
+    .from('business_hours')
+    .select('day_of_week, open_time, close_time')
+    .order('day_of_week')
+
+  if (error) {
+    console.error('Error fetching business hours:', error)
+    return null   // caller falls back to hardcoded schedule
+  }
+
+  return data
+}
+
 // Check if bot is paused for a customer
 async function isBotPaused(phone) {
   const { data, error } = await supabase
@@ -385,5 +402,6 @@ module.exports = {
   pauseBot,
   resumeBot,
   saveDeliveryAddress,
-  getCustomerAddress
+  getCustomerAddress,
+  getBusinessHours
 }

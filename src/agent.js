@@ -1,5 +1,5 @@
 const Anthropic = require('@anthropic-ai/sdk')
-const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getAlmuerzoDeliveryTiers, getDeliveryZoneByAddress, advanceCycleIfNeeded, getWeekAlmuerzos, getPaymentMethods, saveDeliveryAddress, getCustomerAddress } = require('./memory')
+const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getAlmuerzoDeliveryTiers, getDeliveryZoneByAddress, advanceCycleIfNeeded, getWeekAlmuerzos, getPaymentMethods, saveDeliveryAddress, getCustomerAddress, getBusinessHours } = require('./memory')
 const { createZohoDeliveryRecord } = require('./zoho')
 const path = require('path')
 require('dotenv').config({ path: path.resolve(__dirname, '../.env'), override: true })
@@ -15,6 +15,82 @@ const client = new Anthropic({
 function nowInEcuador() {
   return new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Guayaquil' }))
 }
+
+// ─── Business-hours helpers ────────────────────────────────────────────────────
+// All helpers accept the rows returned by getBusinessHours() and fall back to
+// the hardcoded Mon–Fri 08:00–15:30 schedule when the DB data is unavailable.
+
+const BH_DAYS_ES = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado']
+
+/**
+ * Returns true if the restaurant is currently open according to DB hours.
+ * Falls back to hardcoded Mon–Fri 08:00–15:30 if hoursData is null/empty.
+ */
+function checkIsOpen(hoursData, now) {
+  const dow  = now.getDay()
+  const hour = now.getHours()
+  const min  = now.getMinutes()
+
+  if (!hoursData || hoursData.length === 0) {
+    const isWeekend = dow === 0 || dow === 6
+    const inHours   = hour >= 8 && (hour < 15 || (hour === 15 && min <= 30))
+    return !isWeekend && inHours
+  }
+
+  const today = hoursData.find(h => h.day_of_week === dow)
+  if (!today || !today.open_time || !today.close_time) return false
+
+  const [openH, openM]   = today.open_time.split(':').map(Number)
+  const [closeH, closeM] = today.close_time.split(':').map(Number)
+  const nowMins   = hour * 60 + min
+  const openMins  = openH * 60 + openM
+  const closeMins = closeH * 60 + closeM
+  return nowMins >= openMins && nowMins <= closeMins
+}
+
+/**
+ * Returns today's { openTime, closeTime } as "HH:MM" strings, or null if closed today.
+ */
+function getTodaySchedule(hoursData, now) {
+  if (!hoursData || hoursData.length === 0) return { openTime: '08:00', closeTime: '15:30' }
+  const today = hoursData.find(h => h.day_of_week === now.getDay())
+  if (!today || !today.open_time || !today.close_time) return null
+  return {
+    openTime:  today.open_time.substring(0, 5),
+    closeTime: today.close_time.substring(0, 5)
+  }
+}
+
+/**
+ * Full weekly schedule for the system prompt.
+ * e.g. "Lunes: 08:00–15:30 | Martes: 08:00–15:30 | ... | Sábado: Cerrado | Domingo: Cerrado"
+ */
+function formatScheduleStr(hoursData) {
+  if (!hoursData || hoursData.length === 0) return 'Lunes–Viernes: 08:00–15:30 | Sábado: Cerrado | Domingo: Cerrado'
+  return hoursData.map(h => {
+    const day = BH_DAYS_ES[h.day_of_week] || `Día ${h.day_of_week}`
+    if (!h.open_time || !h.close_time) return `${day}: Cerrado`
+    return `${day}: ${h.open_time.substring(0, 5)}–${h.close_time.substring(0, 5)}`
+  }).join(' | ')
+}
+
+/**
+ * Short inline label for prompt rules.
+ * e.g. "lunes a viernes de 08:00 a 15:30"
+ */
+function openDaysLabel(hoursData) {
+  if (!hoursData || hoursData.length === 0) return 'lunes a viernes de 08:00 a 15:30'
+  const openRows = hoursData.filter(h => h.open_time && h.close_time)
+  if (openRows.length === 0) return '(sin horario configurado)'
+  const dayNames = openRows.map(r => BH_DAYS_ES[r.day_of_week]?.toLowerCase() || `día ${r.day_of_week}`)
+  const daysStr = dayNames.length === 1
+    ? dayNames[0]
+    : `${dayNames[0]} a ${dayNames[dayNames.length - 1]}`
+  const openT  = openRows[0].open_time.substring(0, 5)
+  const closeT = openRows[0].close_time.substring(0, 5)
+  return `${daysStr} de ${openT} a ${closeT}`
+}
+// ──────────────────────────────────────────────────────────────────────────────
 
 function formatProducts(products) {
   if (!products || products.length === 0) return '(Menú no disponible)'
@@ -287,7 +363,7 @@ function extractOrderDataForZoho(summaryMsg, history, phone, name, storedAddress
 
 // ──────────────────────────────────────────────────────────────────────────────
 
-function buildSystemPrompt(config, products, deliveryZones, deliveryTiers, weekAlmuerzos, paymentMethods, almuerzoDeliveryTiers) {
+function buildSystemPrompt(config, products, deliveryZones, deliveryTiers, weekAlmuerzos, paymentMethods, almuerzoDeliveryTiers, businessHours) {
   const menu = formatProducts(products)
   const deliveryPricing = formatDeliveryZones(deliveryZones, deliveryTiers)
   const almuerzoDeliveryPricing = formatAlmuerzoDeliveryTiers(almuerzoDeliveryTiers)
@@ -307,14 +383,18 @@ function buildSystemPrompt(config, products, deliveryZones, deliveryTiers, weekA
   const currentHour = now.getHours()
   const currentMin  = now.getMinutes()
   const currentTimeStr = `${String(currentHour).padStart(2, '0')}:${String(currentMin).padStart(2, '0')}`
-  // Restaurant operates 08:00–15:30, Mon–Fri
-  const isWithinHours = currentHour >= 8 && (currentHour < 15 || (currentHour === 15 && currentMin <= 30))
-  const isRestaurantOpen = !isWeekend && isWithinHours
+  // Use DB-driven hours so schedule changes don't require a redeployment
+  const isRestaurantOpen = checkIsOpen(businessHours, now)
+  const scheduleStr = formatScheduleStr(businessHours)
+  const openLabel   = openDaysLabel(businessHours)
+  const todaySched  = getTodaySchedule(businessHours, now)
+  const openT  = todaySched?.openTime  ?? '08:00'
+  const closeT = todaySched?.closeTime ?? '15:30'
 
   return `
 FECHA Y HORA ACTUAL:
 Hoy es ${todayStr}. Hora actual en Ecuador: ${currentTimeStr}.${isWeekend ? ' Es fin de semana — el restaurante NO sirve almuerzos hoy. El menú de almuerzos que tienes disponible es para la próxima semana (Lunes a Viernes).' : ''}
-${!isRestaurantOpen ? `⚠️ FUERA DE HORARIO: Son las ${currentTimeStr} — el restaurante está cerrado (opera de 8:00 a 15:30, lunes a viernes).` : ''}
+${!isRestaurantOpen ? `⚠️ FUERA DE HORARIO: Son las ${currentTimeStr} — el restaurante está cerrado (opera ${openLabel}).` : ''}
 NUNCA menciones una fecha diferente a esta. NUNCA inventes ni supongas la fecha.
 
 IDENTIDAD:
@@ -343,13 +423,16 @@ Cuando el cliente pregunte por horarios, atención los domingos, carta o cualqui
 Solo cuando el cliente use palabras como "almuerzo", "menú del día", "menú de hoy", "qué hay hoy", "qué tienen hoy", "menú de la semana", "plan semanal", "plan mensual" → entonces puedes hablar de almuerzos.
 IMPORTANTE: "menú de hoy", "menú del día", "qué hay hoy" siempre se refiere al almuerzo del día — trátalo como una pregunta de almuerzo y responde con esa información.
 
-REGLA — HORARIO DE OPERACIÓN (8:00–15:30, lunes a viernes):
-El restaurante opera de 8:00 a 15:30, lunes a viernes exclusivamente.
+HORARIO COMPLETO:
+${scheduleStr}
+
+REGLA — HORARIO DE OPERACIÓN:
+El restaurante opera ${openLabel} exclusivamente.
 SI hay una indicación ⚠️ FUERA DE HORARIO al inicio de este prompt Y el cliente intenta hacer un pedido con entrega inmediata:
-→ Informa amablemente: "En este momento estamos fuera de horario (operamos de 8:00 a 15:30 de lunes a viernes), pero con mucho gusto agendamos tu pedido 😊"
+→ Informa amablemente: "En este momento estamos fuera de horario (operamos ${openLabel}), pero con mucho gusto agendamos tu pedido 😊"
 → Ofrece SIEMPRE programar el pedido para el próximo día hábil dentro del horario de operación.
 → Calcula el siguiente día hábil tú mismo usando la fecha de hoy y díselo al cliente.
-→ Pregunta: "¿A qué hora prefieres que llegue tu pedido? Podemos entregarlo entre las 8:00 y las 15:30."
+→ Pregunta: "¿A qué hora prefieres que llegue tu pedido? Podemos entregarlo entre las ${openT} y las ${closeT}."
 → Cuando el cliente confirme la hora, inclúyela en el resumen del pedido así: "📅 Entrega programada: [día calculado] | Turno: [hora solicitada por el cliente]"
 → Continúa con el flujo normal: dirección → resumen → ¿Confirmas tu pedido? → pago.
 → PROHIBIDO decir que no puedes tomar el pedido. SIEMPRE ofrece la opción de programarlo.
@@ -543,7 +626,7 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     const currentCycle = await advanceCycleIfNeeded()
 
     // Fetch all data in parallel (history fetched BEFORE saving new message)
-    const [config, products, deliveryZones, deliveryTiers, almuerzoDeliveryTiers, weekAlmuerzos, paymentMethods, history] = await Promise.all([
+    const [config, products, deliveryZones, deliveryTiers, almuerzoDeliveryTiers, weekAlmuerzos, paymentMethods, businessHours, history] = await Promise.all([
       getAllConfig(),
       getProducts(),
       getDeliveryZones(),
@@ -551,10 +634,11 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       getAlmuerzoDeliveryTiers(),
       getWeekAlmuerzos(currentCycle),
       getPaymentMethods(),
+      getBusinessHours(),
       getHistory(customerPhone)
     ])
 
-    const fullSystemPrompt = buildSystemPrompt(config, products, deliveryZones, deliveryTiers, weekAlmuerzos, paymentMethods, almuerzoDeliveryTiers)
+    const fullSystemPrompt = buildSystemPrompt(config, products, deliveryZones, deliveryTiers, weekAlmuerzos, paymentMethods, almuerzoDeliveryTiers, businessHours)
 
     // Build messages array for Claude — ensure alternating roles (no two consecutive same role)
     const rawMessages = history.map(h => ({ role: h.role, content: h.message }))
@@ -624,22 +708,19 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       }
     }
 
-    // Compute business-hours status — same formula as buildSystemPrompt.
-    // Must happen BEFORE messages.push() so we can inject the after-hours tag
-    // into the message that Claude actually receives.
+    // Business-hours check — uses DB data (businessHours) fetched above, so the schedule
+    // can be changed in Supabase without requiring a redeployment.
+    // Must happen BEFORE messages.push() so the after-hours tag lands in the right message.
     const nowEc = nowInEcuador()
-    const nowHour = nowEc.getHours()
-    const nowMin  = nowEc.getMinutes()
-    const nowIsWeekend = nowEc.getDay() === 0 || nowEc.getDay() === 6
-    const nowIsWithinHours = nowHour >= 8 && (nowHour < 15 || (nowHour === 15 && nowMin <= 30))
-    const isRestaurantOpen = !nowIsWeekend && nowIsWithinHours
+    const isRestaurantOpen = checkIsOpen(businessHours, nowEc)
 
-    // Inject [SISTEMA] after-hours tag into enrichedMessage BEFORE it is pushed to
-    // the messages array. This reinforces the ⚠️ FUERA DE HORARIO flag in the system
-    // prompt by placing it directly in the conversation context so Claude can't miss it.
+    // Inject [SISTEMA] after-hours tag directly into the user message so Claude sees
+    // the constraint inline — more reliable than relying on the distant system-prompt flag.
     if (!isRestaurantOpen) {
-      const currentTimeStr = `${String(nowHour).padStart(2, '0')}:${String(nowMin).padStart(2, '0')}`
-      enrichedMessage += `\n\n[SISTEMA: ⚠️ FUERA DE HORARIO — Son las ${currentTimeStr}. Operamos de 8:00 a 15:30, lunes a viernes. PROHIBIDO procesar pedidos con entrega inmediata. SIEMPRE ofrece programar el pedido para el próximo día hábil.]`
+      const nowH = nowEc.getHours(), nowM = nowEc.getMinutes()
+      const currentTimeStr = `${String(nowH).padStart(2, '0')}:${String(nowM).padStart(2, '0')}`
+      const schedule = openDaysLabel(businessHours)
+      enrichedMessage += `\n\n[SISTEMA: ⚠️ FUERA DE HORARIO — Son las ${currentTimeStr}. Operamos ${schedule}. PROHIBIDO procesar pedidos con entrega inmediata. SIEMPRE ofrece programar el pedido para el próximo día hábil.]`
       console.log(`After-hours tag injected: ${currentTimeStr}`)
     }
 
