@@ -671,7 +671,28 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       }
     }
 
-    // Deterministic override: if any recent bot message had "Confirmas tu pedido" and customer says yes → bypass Claude and send payment directly
+    // Compute business-hours status — same formula as buildSystemPrompt.
+    // Needed here so deterministic overrides can respect the restaurant schedule.
+    const nowEc = nowInEcuador()
+    const nowHour = nowEc.getHours()
+    const nowMin  = nowEc.getMinutes()
+    const nowIsWeekend = nowEc.getDay() === 0 || nowEc.getDay() === 6
+    const nowIsWithinHours = nowHour >= 8 && (nowHour < 15 || (nowHour === 15 && nowMin <= 30))
+    const isRestaurantOpen = !nowIsWeekend && nowIsWithinHours
+
+    // Inject [SISTEMA] after-hours tag into the user message when restaurant is closed.
+    // This reinforces the ⚠️ FUERA DE HORARIO flag already in the system prompt — placing
+    // it directly in the conversation context makes Claude far more likely to act on it
+    // rather than ignoring a distant system-prompt instruction.
+    if (!isRestaurantOpen) {
+      const currentTimeStr = `${String(nowHour).padStart(2, '0')}:${String(nowMin).padStart(2, '0')}`
+      enrichedMessage += `\n\n[SISTEMA: ⚠️ FUERA DE HORARIO — Son las ${currentTimeStr}. Operamos de 8:00 a 15:30, lunes a viernes. PROHIBIDO procesar pedidos con entrega inmediata. SIEMPRE ofrece programar el pedido para el próximo día hábil.]`
+    }
+
+    // Deterministic override: if any recent bot message had "Confirmas tu pedido" and customer says yes → bypass Claude and send payment directly.
+    // GUARD: only fire when the restaurant is open. If closed, fall through to Claude so it can
+    // redirect to scheduling — the isConfirmation path sends payment info unconditionally, which
+    // would let a customer confirm an immediate order even when the restaurant is closed.
     const AFFIRMATIVES = ['si', 'sí', 'confirmo', 'dale', 'ok', 'listo', 'va', 'perfecto', 'claro', 'yes', 'bueno', 'adelante', 'de acuerdo']
     const recentHistory = [...history].slice(-8) // last 8 messages — wide enough to catch the confirmation prompt
     const recentAssistantMsgs = recentHistory.filter(h => h.role === 'assistant')
@@ -680,7 +701,7 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     const hadConfirmationPrompt = !!confirmationMsg
     const customerMsgNorm = customerMessage.trim().toLowerCase().replace(/[¡!¿?.,]/g, '').trim()
     const isAffirmative = AFFIRMATIVES.some(a => customerMsgNorm === a || customerMsgNorm.startsWith(a + ' '))
-    const isConfirmation = hadConfirmationPrompt && isAffirmative
+    const isConfirmation = hadConfirmationPrompt && isAffirmative && isRestaurantOpen
 
     if (isConfirmation) {
       console.log('Order confirmation detected — BYPASSING Claude, sending payment directly')
