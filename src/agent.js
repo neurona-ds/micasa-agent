@@ -253,18 +253,26 @@ function extractOrderDataForZoho(summaryMsg, history, phone, name, storedAddress
     ? turnoInMsg[1].trim()
     : extractTurnoFromHistory(history)
 
-  // Items: lines that represent order rows.
+  // Items: lines that represent order rows — clean and kitchen-ready for Notas_de_Cocina.
   // Bot formats items as:
-  //   "1 × Churrasco de Pollo: $8.50"   (carta, × format)
-  //   "- 1 Almuerzo del día (...): $5.50"  (almuerzo, dash-number format)
-  // Exclude delivery/subtotal/total lines so the fallback never captures them.
-  const itemLines = text.split('\n').filter(l => {
-    if (/envío|subtotal|\bTOTAL\b/i.test(l)) return false
-    return l.includes('×') || /\d\s*x\s+/i.test(l) || /^\s*[-•]\s*\d+\s+/i.test(l)
-  })
-  const itemsText = itemLines.length > 0
-    ? itemLines.join('\n').trim()
-    : ''   // return empty rather than dumping the entire message as a fallback
+  //   "1 × Churrasco de Pollo: $8.50"        (carta, × format)
+  //   "- 1 Almuerzo del día (...): $5.50"     (almuerzo, dash-number format)
+  // Exclude delivery/subtotal/total lines, strip markdown and leading punctuation.
+  const itemLines = text.split('\n')
+    .filter(l => {
+      if (/envío|subtotal|\bTOTAL\b/i.test(l)) return false
+      return l.includes('×') || /\d\s*x\s+/i.test(l) || /^\s*[-•]\s*\d+\s+/i.test(l)
+    })
+    .map(l =>
+      l
+        .replace(/\*\*/g, '')       // strip bold markdown
+        .replace(/\*/g, '')         // strip italic markdown
+        .replace(/^\s*[-•]\s*/, '') // strip leading dash or bullet
+        .trim()
+    )
+    .filter(Boolean)
+
+  const itemsText = itemLines.join('\n')
 
   return {
     phone,
