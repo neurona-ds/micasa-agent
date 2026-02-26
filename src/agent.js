@@ -8,6 +8,14 @@ const client = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
 })
 
+// Return a Date object representing the current moment in Ecuador time (UTC-5).
+// Ecuador does not observe DST so this offset is always fixed.
+// We use this everywhere we need "today" — using raw new Date() returns UTC
+// which is 5 hours ahead and causes wrong day-of-week after 7pm Ecuador time.
+function nowInEcuador() {
+  return new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Guayaquil' }))
+}
+
 function formatProducts(products) {
   if (!products || products.length === 0) return '(Menú no disponible)'
 
@@ -61,7 +69,7 @@ const DAY_NAMES = {
 }
 
 function formatWeekAlmuerzos(weekAlmuerzos, config) {
-  const todayDow = new Date().getDay() // 0=Sun, 1=Mon...
+  const todayDow = nowInEcuador().getDay() // 0=Sun, 1=Mon...
   const isWeekend = todayDow === 0 || todayDow === 6
   const includes = config.almuerzo_includes || 'Sopa, Plato Fuerte, Jugo Natural y Postre'
   const priceDelivery = config.almuerzo_price_delivery
@@ -266,8 +274,10 @@ function buildSystemPrompt(config, products, deliveryZones, deliveryTiers, weekA
   const almuerzoInfo = formatWeekAlmuerzos(weekAlmuerzos, config)
   const bankAccounts = formatPaymentMethods(paymentMethods)
 
-  // Inject real date so Claude never guesses
-  const now = new Date()
+  // Inject real date so Claude never guesses.
+  // Always use Ecuador local time (UTC-5) — raw new Date() is UTC which is
+  // 5 hours ahead and gives the wrong day after 7pm Ecuador time.
+  const now = nowInEcuador()
   const DAY_NAMES_ES = ['Domingo', 'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado']
   const MONTH_NAMES_ES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre']
   const todayStr = `${DAY_NAMES_ES[now.getDay()]} ${now.getDate()} de ${MONTH_NAMES_ES[now.getMonth()]} de ${now.getFullYear()}`
