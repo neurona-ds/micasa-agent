@@ -225,7 +225,9 @@ async function createZohoDeliveryRecord(orderData) {
   // ── Step 3: POST the record ───────────────────────────────────────────────
   const response = await axios.post(
     `${apiDomain}/crm/v2/${moduleName}`,
-    { data: [record] },
+    // "trigger" tells Zoho to fire Workflow Rules on this API-created record —
+    // by default API calls are silent and skip all automation.
+    { data: [record], trigger: ['workflow'] },
     {
       headers: {
         Authorization:  `Zoho-oauthtoken ${token}`,
