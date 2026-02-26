@@ -777,7 +777,6 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     // Must happen BEFORE messages.push() so the after-hours tag lands in the right message.
     const nowEc = nowInEcuador()
     const isRestaurantOpen = checkIsOpen(businessHours, nowEc)
-    console.log(`Hours check: dow=${nowEc.getDay()} hour=${nowEc.getHours()} min=${nowEc.getMinutes()} open=${isRestaurantOpen} hoursRows=${JSON.stringify(businessHours)}`)
 
     // Inject [SISTEMA] after-hours tag directly into the user message so Claude sees
     // the constraint inline — more reliable than relying on the distant system-prompt flag.
