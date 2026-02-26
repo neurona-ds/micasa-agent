@@ -145,10 +145,15 @@ async function createZohoContact(phone, name) {
 function mapTurnoToPickList(turno) {
   if (!turno) return 'Inmediato'
   const t = turno.toString().trim()
-  if (/12[:\s]?30/.test(t))          return '12:30 a 1:30'
-  if (/1[:\s]?30|13[:\s]?30/.test(t)) return '1:30 a 2:30'
-  if (/2[:\s]?30|14[:\s]?30/.test(t)) return '2:30 a 3:30'
-  return 'Inmediato'   // carta orders or unrecognised turno → immediate
+  // Almuerzo turno slots
+  if (/12[:\s]?30/.test(t))            return '12:30 a 1:30'
+  if (/1[:\s]?30|13[:\s]?30/.test(t))  return '1:30 a 2:30'
+  if (/2[:\s]?30|14[:\s]?30/.test(t))  return '2:30 a 3:30'
+  // Morning scheduled deliveries (carta orders or early scheduled):
+  // Zoho pick-list has no morning slots, so "Inmediato" is the closest available
+  // value. The actual requested time is visible in the record Name and Notas_de_Cocina.
+  if (/^(8|9|10|11)[:\s]?\d{0,2}\s*(am|AM)?/.test(t)) return 'Inmediato'
+  return 'Inmediato'   // fallback for any unrecognised format
 }
 
 // ─── Delivery record creation ──────────────────────────────────────────────────

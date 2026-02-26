@@ -303,9 +303,18 @@ function buildSystemPrompt(config, products, deliveryZones, deliveryTiers, weekA
   const todayStr = `${DAY_NAMES_ES[now.getDay()]} ${now.getDate()} de ${MONTH_NAMES_ES[now.getMonth()]} de ${now.getFullYear()}`
   const isWeekend = now.getDay() === 0 || now.getDay() === 6
 
+  // Current Ecuador time for business-hours detection
+  const currentHour = now.getHours()
+  const currentMin  = now.getMinutes()
+  const currentTimeStr = `${String(currentHour).padStart(2, '0')}:${String(currentMin).padStart(2, '0')}`
+  // Restaurant operates 08:00–15:30, Mon–Fri
+  const isWithinHours = currentHour >= 8 && (currentHour < 15 || (currentHour === 15 && currentMin <= 30))
+  const isRestaurantOpen = !isWeekend && isWithinHours
+
   return `
 FECHA Y HORA ACTUAL:
-Hoy es ${todayStr}.${isWeekend ? ' Es fin de semana — el restaurante NO sirve almuerzos hoy. El menú de almuerzos que tienes disponible es para la próxima semana (Lunes a Viernes).' : ''}
+Hoy es ${todayStr}. Hora actual en Ecuador: ${currentTimeStr}.${isWeekend ? ' Es fin de semana — el restaurante NO sirve almuerzos hoy. El menú de almuerzos que tienes disponible es para la próxima semana (Lunes a Viernes).' : ''}
+${!isRestaurantOpen ? `⚠️ FUERA DE HORARIO: Son las ${currentTimeStr} — el restaurante está cerrado (opera de 8:00 a 15:30, lunes a viernes).` : ''}
 NUNCA menciones una fecha diferente a esta. NUNCA inventes ni supongas la fecha.
 
 IDENTIDAD:
@@ -333,6 +342,18 @@ NUNCA menciones almuerzos, menú del día, turnos de almuerzo, planes semanales/
 Cuando el cliente pregunte por horarios, atención los domingos, carta o cualquier otra cosa NO relacionada con almuerzos → NO menciones almuerzos. Responde solo lo que se preguntó.
 Solo cuando el cliente use palabras como "almuerzo", "menú del día", "menú de hoy", "qué hay hoy", "qué tienen hoy", "menú de la semana", "plan semanal", "plan mensual" → entonces puedes hablar de almuerzos.
 IMPORTANTE: "menú de hoy", "menú del día", "qué hay hoy" siempre se refiere al almuerzo del día — trátalo como una pregunta de almuerzo y responde con esa información.
+
+REGLA — HORARIO DE OPERACIÓN (8:00–15:30, lunes a viernes):
+El restaurante opera de 8:00 a 15:30, lunes a viernes exclusivamente.
+SI hay una indicación ⚠️ FUERA DE HORARIO al inicio de este prompt Y el cliente intenta hacer un pedido con entrega inmediata:
+→ Informa amablemente: "En este momento estamos fuera de horario (operamos de 8:00 a 15:30 de lunes a viernes), pero con mucho gusto agendamos tu pedido 😊"
+→ Ofrece SIEMPRE programar el pedido para el próximo día hábil dentro del horario de operación.
+→ Calcula el siguiente día hábil tú mismo usando la fecha de hoy y díselo al cliente.
+→ Pregunta: "¿A qué hora prefieres que llegue tu pedido? Podemos entregarlo entre las 8:00 y las 15:30."
+→ Cuando el cliente confirme la hora, inclúyela en el resumen del pedido así: "📅 Entrega programada: [día calculado] | Turno: [hora solicitada por el cliente]"
+→ Continúa con el flujo normal: dirección → resumen → ¿Confirmas tu pedido? → pago.
+→ PROHIBIDO decir que no puedes tomar el pedido. SIEMPRE ofrece la opción de programarlo.
+→ Si el cliente solo consulta el menú, precios u horarios (sin intención clara de ordenar) → NO menciones el horario de operación salvo que lo pregunte.
 
 NOTA ALMUERZOS FIN DE SEMANA:
 Si hoy es sábado o domingo, el menú mostrado corresponde a la PRÓXIMA semana (Lunes a Viernes).
