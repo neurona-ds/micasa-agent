@@ -572,6 +572,14 @@ Cuando el cliente pida para un día diferente a HOY (${todayStr}), ya sea mañan
 → Esta línea es OBLIGATORIA — nunca la omitas aunque el día ya esté mencionado en el nombre del ítem.
 → Sin esta línea, el sistema no puede registrar la fecha de entrega correctamente.
 
+REGLA CRÍTICA — PRESERVAR FECHA DE ENTREGA CUANDO CAMBIAN LOS ÍTEMS:
+Si en esta conversación el cliente YA mencionó una fecha de entrega (mañana, el viernes, el lunes 2 de marzo, etc.) Y luego modifica SOLO los ítems del pedido (cambia cantidades, reemplaza platos, agrega o quita ítems):
+→ CONSERVA la fecha de entrega original sin excepción.
+→ NUNCA reemplaces la fecha original por "mañana" u otra fecha diferente por el simple hecho de que el cliente cambió los ítems.
+→ La fecha de entrega SOLO cambia cuando el cliente menciona EXPLÍCITAMENTE una nueva fecha ("mejor para el martes", "cámbialo para el lunes", etc.).
+→ Ejemplo incorrecto: cliente dijo "para el lunes 2 de marzo" → luego dice "mejor 4 fanescas en vez de almuerzos" → bot responde "para mañana viernes". ❌
+→ Ejemplo correcto: cliente dijo "para el lunes 2 de marzo" → luego dice "mejor 4 fanescas en vez de almuerzos" → bot responde "4 Fanescas para el lunes 2 de marzo". ✅
+
 NOTA ALMUERZOS FIN DE SEMANA:
 Si hoy es sábado o domingo, el menú mostrado corresponde a la PRÓXIMA semana (Lunes a Viernes).
 Puedes compartirlo cuando el cliente pregunte — es información válida y confirmada.

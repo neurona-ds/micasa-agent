@@ -202,22 +202,19 @@ async function createZohoDeliveryRecord(orderData) {
     // Phone (stored directly on the record for quick access)
     Telefono:           orderData.phone,
 
-    // Order items — "Notas de Cocina" is the kitchen-facing notes field.
-    // For carta orders with a scheduled time, prepend the requested hour so the kitchen
-    // knows when to prepare — Horario_de_Entrega is always "Inmediato" for carta (no slot system).
-    Notas_de_Cocina: (orderData.orderType === 'carta' && orderData.turno)
-      ? `Hora solicitada: ${orderData.turno}\n${orderData.itemsText || ''}`
-      : (orderData.itemsText || ''),
+    // Order items — kitchen-facing notes
+    Notas_de_Cocina:    orderData.itemsText || '',
 
     // Delivery address
     Direccion:          orderData.address   || '',
 
-    // Horario_de_Entrega pick-list:
-    //   Almuerzo orders → mapped slot: "Inmediato" | "12:30 a 1:30" | "1:30 a 2:30" | "2:30 a 3:30"
-    //   Carta orders    → always "Inmediato" (no slot system; requested time is in Notas_de_Cocina)
+    // Horario_de_Entrega:
+    //   Almuerzo → slot mapping: "Inmediato" | "12:30 a 1:30" | "1:30 a 2:30" | "2:30 a 3:30"
+    //   Carta    → raw requested time (e.g. "9:30") when customer specified one, else "Inmediato"
+    //              (carta has no slot system; customer gives exact hour or expects immediate delivery)
     Horario_de_Entrega: (orderData.orderType === 'almuerzo')
       ? mapTurnoToPickList(orderData.turno)
-      : 'Inmediato',
+      : (orderData.turno || 'Inmediato'),
 
     // Financial fields
     Valor_Venta:        orderData.total        || 0,
