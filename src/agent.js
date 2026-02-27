@@ -821,7 +821,7 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         '',
         '💰 *Precios:*',
         '- Porción de 1 Litro $9.50',
-        '- Fanesca Congelada 2 porciones de 350gr $9.75',
+        '- Caja Fanesca Congelada 2 Unidades (450g c/u): $8.90',
         '',
         '📅 Para semana santa tenemos pocas unidades disponibles pero aún puedes reservar la tuya',
         '',
