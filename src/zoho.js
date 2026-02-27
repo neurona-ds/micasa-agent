@@ -232,7 +232,7 @@ async function createZohoDeliveryRecord(orderData) {
     // Record origin — used by Zoho workflow to gate human-approval step:
     // bot-created records stay at 'Pendiente de Pago' until operator confirms
     // payment and switches Estado → 'Pago Confirmado', which fires the second workflow.
-    Fuente:             'WhatsApp Bot',
+    Fuente:             'WhatsApp_Bot',
 
     // Quantity — almuerzo orders only (null/absent for carta orders)
     ...(orderData.cantidad != null && { Cantidad: orderData.cantidad }),
