@@ -182,15 +182,23 @@ async function createZohoDeliveryRecord(orderData) {
   }
 
   // ── Step 2: build the record using verified field API names ───────────────
-  // Use Ecuador timezone (UTC-5) — new Date().toISOString() returns UTC which rolls
-  // over to the next calendar day after 7pm Ecuador time, giving the wrong date.
-  // en-CA locale produces YYYY-MM-DD format directly, no splitting needed.
+  // Primary source: pre-computed fields frozen in pending_order at order summary time.
+  // Fallbacks: compute on the fly for legacy orders that predate these fields.
+  // Ecuador timezone fallback (en-CA = YYYY-MM-DD) for same-day immediate orders.
   const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Guayaquil' })
 
-  // For scheduled (future) orders, Fecha_de_Envio should be the requested delivery date,
-  // not today. extractOrderDataForZoho populates scheduledDate when "📅 Entrega programada:"
-  // is found in the order summary; it's null for immediate orders.
-  const deliveryDate = orderData.scheduledDate || today
+  // fechaEnvio is frozen in pending_order at order time → correct even if payment
+  // arrives after midnight. Fall back to scheduledDate → today for older orders.
+  const deliveryDate = orderData.fechaEnvio
+    || orderData.scheduledDate
+    || today
+
+  // horarioEntrega is frozen in pending_order at order time → no re-computation needed.
+  // Legacy fallback: re-derive from orderType + turno using local logic.
+  const horarioEntrega = orderData.horarioEntrega
+    || ((orderData.orderType === 'almuerzo')
+        ? mapTurnoToPickList(orderData.turno)
+        : (orderData.turno || 'Inmediato'))
 
   const record = {
     // Record display name — uses delivery date so it's meaningful at a glance
@@ -208,13 +216,8 @@ async function createZohoDeliveryRecord(orderData) {
     // Delivery address
     Direccion:          orderData.address   || '',
 
-    // Horario_de_Entrega:
-    //   Almuerzo → slot mapping: "Inmediato" | "12:30 a 1:30" | "1:30 a 2:30" | "2:30 a 3:30"
-    //   Carta    → raw requested time (e.g. "9:30") when customer specified one, else "Inmediato"
-    //              (carta has no slot system; customer gives exact hour or expects immediate delivery)
-    Horario_de_Entrega: (orderData.orderType === 'almuerzo')
-      ? mapTurnoToPickList(orderData.turno)
-      : (orderData.turno || 'Inmediato'),
+    // Pre-computed at order time — slot for almuerzo, raw time or 'Inmediato' for carta
+    Horario_de_Entrega: horarioEntrega,
 
     // Financial fields
     Valor_Venta:        orderData.total        || 0,
@@ -231,7 +234,7 @@ async function createZohoDeliveryRecord(orderData) {
     // Quantity — almuerzo orders only (null/absent for carta orders)
     ...(orderData.cantidad != null && { Cantidad: orderData.cantidad }),
 
-    // Delivery date — scheduled date when provided, today for immediate orders
+    // Pre-computed delivery date — frozen at order time, not at payment time
     Fecha_de_Envio:     deliveryDate
   }
 

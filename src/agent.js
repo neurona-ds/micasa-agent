@@ -460,22 +460,50 @@ function extractOrderDataForZoho(summaryMsg, history, phone, name, storedAddress
     cantidad = cantMatch ? parseInt(cantMatch[1]) : 1
   }
 
-  // Order type: drives Horario_de_Entrega logic in zoho.js.
+  // Order type: drives Horario_de_Entrega logic.
   // Almuerzo orders have "almuerzo" or "Menú del Día" in the items block;
   // everything else (fanesca, churrasco, carta items) is 'carta'.
   const orderType = /almuerzo|men[uú]\s+del\s+d[ií]a/i.test(itemsText) ? 'almuerzo' : 'carta'
 
+  // ── Pre-compute Zoho field values at order summary time ─────────────────────
+  // Frozen here so pending_order is the single source of truth.
+  // zoho.js reads these directly — no re-computation at payment time.
+
+  // Horario_de_Entrega: almuerzo → slot mapping, carta → raw time or 'Inmediato'.
+  // Logic mirrors mapTurnoToPickList() in zoho.js (duplicated intentionally so
+  // agent.js stays self-contained and the value is frozen in the DB snapshot).
+  let horarioEntrega
+  if (orderType === 'almuerzo') {
+    if (!turno)                                   horarioEntrega = 'Inmediato'
+    else if (/12[:\s]?30/.test(turno))            horarioEntrega = '12:30 a 1:30'
+    else if (/1[:\s]?30|13[:\s]?30/.test(turno)) horarioEntrega = '1:30 a 2:30'
+    else if (/2[:\s]?30|14[:\s]?30/.test(turno)) horarioEntrega = '2:30 a 3:30'
+    else                                           horarioEntrega = 'Inmediato'
+  } else {
+    // Carta: customer-stated time (e.g. '9:30') or 'Inmediato' if none given
+    horarioEntrega = turno || 'Inmediato'
+  }
+
+  // Fecha_de_Envio: freeze delivery date NOW (Ecuador timezone) so zoho.js
+  // gets the correct date even if payment arrives after midnight.
+  // Future-scheduled orders use scheduledDate; same-day orders use today.
+  const fechaEnvio = scheduledDate
+    || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Guayaquil' })
+  // ────────────────────────────────────────────────────────────────────────────
+
   return {
     phone,
-    customerName: name || phone,
+    customerName:   name || phone,
     total,
     deliveryCost,
     address,
     turno,
     itemsText,
-    scheduledDate,  // YYYY-MM-DD or null (null = immediate order, use today)
-    cantidad,       // number or null (null = non-almuerzo order)
-    orderType       // 'almuerzo' | 'carta' — used by zoho.js for Horario_de_Entrega
+    scheduledDate,    // YYYY-MM-DD or null (kept for reference)
+    cantidad,         // number or null (null = non-almuerzo order)
+    orderType,        // 'almuerzo' | 'carta'
+    horarioEntrega,   // pre-computed Zoho Horario_de_Entrega pick-list value
+    fechaEnvio        // pre-computed YYYY-MM-DD delivery date (frozen at order time)
   }
 }
 
