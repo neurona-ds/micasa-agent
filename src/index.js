@@ -3,7 +3,7 @@ require('dotenv').config({ path: path.resolve(__dirname, '../.env'), override: t
 const express = require('express')
 const axios = require('axios')
 const { processMessage, triggerZohoOnPayment, hasPendingOrder } = require('./agent')
-const { isBotPaused, pauseBot, resumeBot } = require('./memory')
+const { isBotPaused, pauseBot, resumeBot, getDeliveryZoneByCoordinates, saveDeliveryAddress } = require('./memory')
 
 const app = express()
 app.use(express.json())
@@ -234,6 +234,65 @@ app.post('/webhook', async (req, res) => {
 
       return res.status(200).json({ status: 'media_handoff' })
     }
+
+    // ── LOCATION PIN MESSAGE ─────────────────────────────────────────────────
+    // Customer shared their WhatsApp location. Extract lat/lng, reverse-geocode
+    // to a formatted address, calculate zone, save to DB, then pass an enriched
+    // message to Claude with the zone injected — same flow as a text address.
+    if (messageType === 'location') {
+      console.log(`LOCATION PIN received from ${customerPhone}`)
+
+      let lat = null, lng = null
+      try {
+        // WATI may send location data as a JSON string or plain object
+        const locData = typeof body.data === 'string'
+          ? JSON.parse(body.data)
+          : (body.data || {})
+        lat = locData.latitude ?? locData.lat ?? null
+        lng = locData.longitude ?? locData.lng ?? null
+      } catch (e) {
+        console.warn('Could not parse location data:', body.data)
+      }
+
+      if (lat == null || lng == null) {
+        console.warn('Location message missing lat/lng — ignoring')
+        return res.status(200).json({ status: 'location_missing_coords' })
+      }
+
+      processingPhones.add(customerPhone)
+      try {
+        const zoneResult = await getDeliveryZoneByCoordinates(lat, lng)
+
+        let locationMessage = '📍 Ubicación compartida vía WhatsApp'
+        if (zoneResult) {
+          const { zone, distanceKm, formattedAddress } = zoneResult
+
+          // Persist to DB — same as text address geocoding flow
+          saveDeliveryAddress(customerPhone, formattedAddress, zone, distanceKm).catch(err =>
+            console.warn('saveDeliveryAddress (location pin) failed:', err.message)
+          )
+
+          // Inject zone so Claude can quote delivery price directly
+          locationMessage += `\n\n[SISTEMA: Dirección geocodificada → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. NO mencionar zona al cliente.]`
+          console.log(`Location zone injected: Zone ${zone} (${distanceKm}km) → ${formattedAddress}`)
+        } else {
+          console.warn('Location reverse-geocoding failed — passing pin to Claude without zone')
+        }
+
+        const result = await processMessage(customerPhone, locationMessage, customerName)
+        await sendWatiMessage(customerPhone, result.reply)
+        if (result.needsPaymentHandoff) {
+          await notifyHandoff(customerPhone, customerName, 'PAYMENT', locationMessage)
+        } else if (result.needsHandoff) {
+          await notifyHandoff(customerPhone, customerName, 'GENERAL', locationMessage)
+        }
+        lastProcessed.set(customerPhone, Date.now())
+      } finally {
+        processingPhones.delete(customerPhone)
+      }
+      return res.status(200).json({ status: 'location_processed' })
+    }
+    // ──────────────────────────────────────────────────────────────────────────
 
     // Regular text message — WATI sends text as plain string
     const customerMessage =

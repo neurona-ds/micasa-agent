@@ -301,6 +301,64 @@ async function getDeliveryZoneByAddress(customerAddress) {
   }
 }
 
+/**
+ * Same as getDeliveryZoneByAddress but starts from coordinates (WhatsApp location pin).
+ * Skips forward-geocoding; uses reverse-geocoding to get a formatted address,
+ * then applies the same Haversine distance + zone logic.
+ */
+async function getDeliveryZoneByCoordinates(lat, lng) {
+  try {
+    const apiKey = process.env.GOOGLE_MAPS_API_KEY
+    if (!apiKey) {
+      console.warn('GOOGLE_MAPS_API_KEY not set — cannot calculate delivery zone from coordinates')
+      return null
+    }
+
+    // Reverse geocode to get a human-readable formatted address
+    const reverseResponse = await axios.get('https://maps.googleapis.com/maps/api/geocode/json', {
+      params: {
+        latlng: `${lat},${lng}`,
+        key: apiKey,
+        language: 'es'
+      },
+      timeout: 5000
+    })
+
+    const data = reverseResponse.data
+    if (!data || data.status !== 'OK' || !data.results?.length) {
+      console.warn(`Reverse geocoding failed for (${lat},${lng}): status=${data?.status}`)
+      return null
+    }
+
+    const formattedAddress = data.results[0].formatted_address
+    const customerLat = parseFloat(lat)
+    const customerLng = parseFloat(lng)
+
+    // Haversine formula — same as getDeliveryZoneByAddress
+    const R = 6371
+    const dLat = ((customerLat - RESTAURANT_LAT) * Math.PI) / 180
+    const dLng = ((customerLng - RESTAURANT_LNG) * Math.PI) / 180
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos((RESTAURANT_LAT * Math.PI) / 180) *
+      Math.cos((customerLat * Math.PI) / 180) *
+      Math.sin(dLng / 2) * Math.sin(dLng / 2)
+    const distanceKm = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+
+    let zone
+    if (distanceKm <= 2) zone = 1
+    else if (distanceKm <= 4) zone = 2
+    else if (distanceKm <= 6) zone = 3
+    else zone = 4
+
+    console.log(`Zone calc (pin): (${lat},${lng}) → ${formattedAddress} | ${distanceKm.toFixed(2)}km → Zone ${zone}`)
+    return { zone, distanceKm: parseFloat(distanceKm.toFixed(2)), formattedAddress }
+  } catch (err) {
+    console.error('Error in getDeliveryZoneByCoordinates:', err.message)
+    return null
+  }
+}
+
 // Save the geocoded delivery address + zone + distance for a customer.
 // Called right after Google Maps geocoding succeeds so we always have clean,
 // structured data available for Zoho — no need to parse conversation text.
@@ -429,6 +487,7 @@ module.exports = {
   getDeliveryTiers,
   getAlmuerzoDeliveryTiers,
   getDeliveryZoneByAddress,
+  getDeliveryZoneByCoordinates,
   advanceCycleIfNeeded,
   getWeekAlmuerzos,
   getPaymentMethods,
