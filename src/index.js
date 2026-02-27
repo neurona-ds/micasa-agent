@@ -3,7 +3,7 @@ require('dotenv').config({ path: path.resolve(__dirname, '../.env'), override: t
 const express = require('express')
 const axios = require('axios')
 const { processMessage, triggerZohoOnPayment, hasPendingOrder } = require('./agent')
-const { isBotPaused, pauseBot, resumeBot, getDeliveryZoneByCoordinates, saveDeliveryAddress } = require('./memory')
+const { isBotPaused, pauseBot, resumeBot, getDeliveryZoneByCoordinates, saveDeliveryZoneOnly, saveLocationPin } = require('./memory')
 
 const app = express()
 app.use(express.json())
@@ -261,22 +261,35 @@ app.post('/webhook', async (req, res) => {
 
       processingPhones.add(customerPhone)
       try {
+        // Save the raw pin immediately — before geocoding, non-blocking
+        saveLocationPin(customerPhone, lat, lng).catch(err =>
+          console.warn('saveLocationPin failed (non-blocking):', err.message)
+        )
+
         const zoneResult = await getDeliveryZoneByCoordinates(lat, lng)
 
+        // "📍 Ubicación compartida" is what Claude sees as the "customer message".
+        // We intentionally do NOT include the geocoded formatted address here —
+        // Claude would echo it back to the customer, which confuses them when it
+        // differs from what they recognise (e.g. "El Bosque, Quito 170132" vs
+        // what they call their neighbourhood). Zone is still injected for pricing.
         let locationMessage = '📍 Ubicación compartida vía WhatsApp'
         if (zoneResult) {
           const { zone, distanceKm, formattedAddress } = zoneResult
 
-          // Persist to DB — same as text address geocoding flow
-          saveDeliveryAddress(customerPhone, formattedAddress, zone, distanceKm).catch(err =>
-            console.warn('saveDeliveryAddress (location pin) failed:', err.message)
+          // Save zone + distance only — NOT the geocoded address string.
+          // last_delivery_address stays untouched so Claude never offers
+          // a geocoded string as the customer's "previous address".
+          saveDeliveryZoneOnly(customerPhone, zone, distanceKm).catch(err =>
+            console.warn('[location handler] saveDeliveryZoneOnly failed:', err.message)
           )
 
-          // Inject zone so Claude can quote delivery price directly
-          locationMessage += `\n\n[SISTEMA: Dirección geocodificada → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. NO mencionar zona al cliente.]`
-          console.log(`Location zone injected: Zone ${zone} (${distanceKm}km) → ${formattedAddress}`)
+          // Inject zone for delivery pricing — geocoded address is intentionally
+          // omitted from what Claude sees (stored internally for Zoho only via log).
+          locationMessage += `\n\n[SISTEMA: Pin de ubicación recibido | Distancia: ${distanceKm}km → Zona ${zone}. NO mencionar zona al cliente. NO mostrar dirección geocodificada al cliente.]`
+          console.log(`[location handler] Zone ${zone} (${distanceKm}km) | geocoded="${formattedAddress}" (NOT sent to Claude)`)
         } else {
-          console.warn('Location reverse-geocoding failed — passing pin to Claude without zone')
+          console.warn('[location handler] Reverse-geocoding failed — passing pin to Claude without zone')
         }
 
         const result = await processMessage(customerPhone, locationMessage, customerName)

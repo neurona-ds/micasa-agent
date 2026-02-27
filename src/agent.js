@@ -656,6 +656,7 @@ REGLAS ABSOLUTAS DE DELIVERY — NUNCA VIOLAR:
 3. NUNCA digas "delivery incluido", "con delivery", "precio con envío" ni similares.
 4. Si el cliente pregunta "¿cuánto es el envío?" o "¿tiene recargo?" SIN haber dado dirección → responde SOLO: "El costo de envío depende de tu dirección. ¿Me podrías dar tu dirección completa, referencia y ubicación si es posible? 📍"
 5. Una vez tengas la dirección → el sistema inyectará automáticamente la zona y el tipo de pedido en el mensaje (etiqueta [SISTEMA]). Úsala para calcular internamente → di SOLO el precio: "El envío a tu sector es $X" (sin mencionar zona).
+6. PIN DE UBICACIÓN (WhatsApp location): Si el cliente comparte solo su ubicación GPS (verás "📍 Ubicación compartida vía WhatsApp"), el sistema inyectará la zona para que puedas cotizar el envío. Después de cotizar, pide SIEMPRE la dirección de texto para precisión: "¿Podrías también compartirme tu dirección exacta o una referencia? Así el repartidor llega sin inconvenientes 📍" — Si ya tienes dirección en el historial, NO la pidas de nuevo.
 
 CÁLCULO INTERNO DE ENVÍO (después de tener dirección):
 - El sistema te indicará en [SISTEMA]: zona, tipo de pedido (ALMUERZO / CARTA / MIXTO), y cantidad de almuerzos si aplica.
@@ -932,12 +933,15 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     const nowEc = nowInEcuador()
     const isRestaurantOpen = checkIsOpen(businessHours, nowEc)
 
-    // Inject stored address into context so Claude always knows what's on file in DB.
-    // Inject stored address so Claude knows what's on file and can offer it to the customer.
-    // When it's time to ask for the delivery address, Claude should offer the stored one
-    // as a one-tap option rather than silently assuming it or asking from scratch.
+    // Inject stored delivery info so Claude can offer it to the customer without asking from scratch.
     if (storedGeo?.address) {
+      // Customer previously typed a text address — offer it back verbatim
       enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una dirección registrada: "${storedGeo.address}". Al momento de pedir la dirección de entrega, SIEMPRE ofrece primero esta opción preguntando: "¿Enviamos a tu dirección anterior — ${storedGeo.address} — o prefieres indicar una nueva? 📍". Si el cliente confirma, usa EXACTAMENTE esta dirección. Si da una nueva, úsala y descarta la registrada.]`
+    } else if (storedGeo?.locationPin) {
+      // Customer previously shared a WhatsApp location pin (no text address on file)
+      // We have the zone already — use it to quote delivery price when they confirm.
+      const zoneInfo = storedGeo.zone ? ` Zona interna: ${storedGeo.zone} (NO mencionar al cliente).` : ''
+      enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una ubicación GPS guardada de una sesión anterior.${zoneInfo} Al pedir la dirección de entrega pregunta EXACTAMENTE: "¿Enviamos a tu ubicación guardada 📍 o prefieres indicar tu dirección con texto?" — Si confirma la ubicación guardada: cotiza el envío usando la zona ya calculada${storedGeo.zone ? ` (Zona ${storedGeo.zone})` : ''} y en el resumen del pedido escribe "📍 Ubicación compartida vía WhatsApp". Si da una nueva dirección de texto: procesa normalmente y descarta la ubicación guardada.]`
     }
 
     // Inject [SISTEMA] after-hours tag directly into the user message so Claude sees

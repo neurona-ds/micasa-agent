@@ -375,6 +375,41 @@ async function saveDeliveryAddress(phone, formattedAddress, zone, distanceKm) {
   if (error) console.error('Error saving delivery address:', error)
 }
 
+// Save the raw WhatsApp location pin as a single JSONB object.
+// Stored exactly as the customer sent it — one column, no splitting.
+async function saveLocationPin(phone, lat, lng) {
+  const pin = { lat, lng }
+  console.log(`[saveLocationPin] Saving pin for ${phone}:`, pin)
+  const { data, error } = await supabase
+    .from('customers')
+    .update({ last_location_pin: pin })
+    .eq('phone', phone)
+    .select('phone, last_location_pin')
+
+  if (error) {
+    console.error(`[saveLocationPin] DB error for ${phone}:`, error.message, error.details || '')
+    console.error('[saveLocationPin] Hint: run this SQL in Supabase if column is missing:')
+    console.error('  ALTER TABLE customers ADD COLUMN IF NOT EXISTS last_location_pin JSONB;')
+  } else {
+    console.log(`[saveLocationPin] Saved OK →`, data)
+  }
+}
+
+// Save zone + distance for a customer WITHOUT overwriting their text address.
+// Used for location pins — keeps last_delivery_address clean (only set from typed addresses).
+async function saveDeliveryZoneOnly(phone, zone, distanceKm) {
+  console.log(`[saveDeliveryZoneOnly] zone=${zone}, dist=${distanceKm}km for ${phone}`)
+  const { error } = await supabase
+    .from('customers')
+    .update({
+      last_delivery_zone: zone,
+      last_delivery_distance_km: distanceKm
+    })
+    .eq('phone', phone)
+
+  if (error) console.error('[saveDeliveryZoneOnly] DB error:', error.message)
+}
+
 // ─── Pending order ────────────────────────────────────────────────────────────
 // Saves the fully-extracted orderData object when the bot sends an order summary.
 // At payment time we read this instead of scanning conversation history.
@@ -409,20 +444,30 @@ async function clearPendingOrder(phone) {
 }
 // ──────────────────────────────────────────────────────────────────────────────
 
-// Get the last geocoded delivery data stored for a customer.
-// Returns { address, zone, distanceKm } or null if nothing stored yet.
+// Get the last delivery data stored for a customer.
+// Returns { address, zone, distanceKm, locationPin } or null if nothing stored yet.
+// address     — typed text address (null if customer only ever shared a pin)
+// locationPin — raw { lat, lng } from WhatsApp location pin (null if only text address)
+// zone + distanceKm — set from whichever source was most recent
 async function getCustomerAddress(phone) {
   const { data, error } = await supabase
     .from('customers')
-    .select('last_delivery_address, last_delivery_zone, last_delivery_distance_km')
+    .select('last_delivery_address, last_delivery_zone, last_delivery_distance_km, last_location_pin')
     .eq('phone', phone)
     .single()
 
-  if (error || !data || !data.last_delivery_address) return null
+  if (error || !data) return null
+
+  const hasAddress = !!data.last_delivery_address
+  const hasPin = !!data.last_location_pin
+
+  if (!hasAddress && !hasPin) return null
+
   return {
-    address: data.last_delivery_address,
-    zone: data.last_delivery_zone,
-    distanceKm: data.last_delivery_distance_km
+    address: data.last_delivery_address || null,
+    zone: data.last_delivery_zone || null,
+    distanceKm: data.last_delivery_distance_km || null,
+    locationPin: data.last_location_pin || null   // { lat, lng }
   }
 }
 
@@ -495,6 +540,8 @@ module.exports = {
   pauseBot,
   resumeBot,
   saveDeliveryAddress,
+  saveLocationPin,
+  saveDeliveryZoneOnly,
   getCustomerAddress,
   getBusinessHours,
   savePendingOrder,
