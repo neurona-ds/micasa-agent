@@ -821,7 +821,7 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         '',
         '💰 *Precios:*',
         '- Fanesca 1LT Lista para consumir (Con sus guarniciones) $9.50',
-        '- Congelada Caja de 2 Unidades (350g c/u): $8.90',
+        '- Congelada Caja de 2 Unidades (350g c/u): $9.75',
         '',
         '📅 Para semana santa tenemos pocas unidades disponibles pero aún puedes reservar la tuya',
         '',
