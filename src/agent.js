@@ -892,6 +892,17 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       !/\b(quiero|ustedes|abren|cierran|pueden|puedo|tenemos|tengo|tienen|cuándo|cuando|cuánto|cuanto|están|abre|cierra|pronto|dijiste|dices|dijeron)\b/i.test(msgTrimmed)
     )
 
+    // Detect Maps URL unconditionally — save as location pin regardless of conversation state.
+    // This runs before the address-detection block so a Maps URL is always persisted
+    // even if the bot's last message wasn't asking for an address (e.g. after a HANDOFF).
+    const isMapsUrl = /https?:\/\/(maps\.app\.goo\.gl|goo\.gl\/maps|maps\.google\.com|www\.google\.com\/maps)/i.test(customerMessage.trim())
+    if (isMapsUrl) {
+      saveLocationPin(customerPhone, { url: customerMessage.trim() }).catch(err =>
+        console.warn('[agent] saveLocationPin (maps url) failed:', err.message)
+      )
+      console.log(`Maps URL detected — saved as location pin: ${customerMessage.trim()}`)
+    }
+
     let enrichedMessage = customerMessage
     if (lastBotAskedAddress && looksLikeAddress) {
       console.log(`Address response detected — calling Google Maps for zone`)
@@ -917,17 +928,12 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección geocodificada → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente.]`
         console.log(`Zone injected: Zone ${zone} (${distanceKm}km)`)
 
-        // Google Maps URL → save as location pin + zone only (no text address to store)
-        // Regular text address → save geocoded result as the customer's address
-        const isMapsUrl = /https?:\/\/(maps\.app\.goo\.gl|goo\.gl\/maps|maps\.google\.com|www\.google\.com\/maps)/i.test(customerMessage)
         if (isMapsUrl) {
-          saveLocationPin(customerPhone, { url: customerMessage }).catch(err =>
-            console.warn('saveLocationPin (maps url) failed:', err.message)
-          )
+          // Zone saved separately — pin already saved above
           saveDeliveryZoneOnly(customerPhone, zone, distanceKm).catch(err =>
             console.warn('saveDeliveryZoneOnly (maps url) failed:', err.message)
           )
-          console.log(`Maps URL → saved as location pin, zone only (no text address)`)
+          console.log(`Maps URL → zone only saved (no text address)`)
         } else {
           // Non-blocking: a DB failure here must never break the conversation flow.
           saveDeliveryAddress(customerPhone, formattedAddress, zone, distanceKm).catch(err =>
