@@ -925,7 +925,10 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
           console.log(`Order type: CARTA`)
         }
 
-        enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección geocodificada → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente.]`
+        // For Maps URLs: echo the URL in the summary so the customer can verify their location.
+        // For text addresses: show the geocoded formatted address.
+        const summaryLocation = isMapsUrl ? customerMessage.trim() : formattedAddress
+        enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección geocodificada → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido escribe la dirección así: "📍 ${summaryLocation}"]`
         console.log(`Zone injected: Zone ${zone} (${distanceKm}km)`)
 
         if (isMapsUrl) {
@@ -956,10 +959,13 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       // Customer previously typed a text address — offer it back verbatim
       enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una dirección registrada: "${storedGeo.address}". Al momento de pedir la dirección de entrega, SIEMPRE ofrece primero esta opción preguntando: "¿Enviamos a tu dirección anterior — ${storedGeo.address} — o prefieres indicar una nueva? 📍". Si el cliente confirma, usa EXACTAMENTE esta dirección. Si da una nueva, úsala y descarta la registrada.]`
     } else if (storedGeo?.locationPin) {
-      // Customer previously shared a WhatsApp location pin (no text address on file)
-      // We have the zone already — use it to quote delivery price when they confirm.
+      // Customer previously shared a location pin (native WhatsApp or Maps URL).
+      // Echo the stored pin back so the customer can verify it's correct.
+      const pinLabel = storedGeo.locationPin.url
+        ? storedGeo.locationPin.url                 // Maps URL → show the link
+        : 'Ubicación compartida vía WhatsApp'       // native lat/lng pin → generic label
       const zoneInfo = storedGeo.zone ? ` Zona interna: ${storedGeo.zone} (NO mencionar al cliente).` : ''
-      enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una ubicación GPS guardada de una sesión anterior.${zoneInfo} Al pedir la dirección de entrega pregunta EXACTAMENTE: "¿Enviamos a tu ubicación guardada 📍 o prefieres indicar tu dirección con texto?" — Si confirma la ubicación guardada: cotiza el envío usando la zona ya calculada${storedGeo.zone ? ` (Zona ${storedGeo.zone})` : ''} y en el resumen del pedido escribe "📍 Ubicación compartida vía WhatsApp". Si da una nueva dirección de texto: procesa normalmente y descarta la ubicación guardada.]`
+      enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una ubicación guardada de una sesión anterior: "${pinLabel}".${zoneInfo} Al pedir la dirección de entrega pregunta EXACTAMENTE: "¿Enviamos a tu ubicación guardada — ${pinLabel} — o prefieres indicar una nueva? 📍" — Si confirma: cotiza el envío usando la zona ya calculada${storedGeo.zone ? ` (Zona ${storedGeo.zone})` : ''} y en el resumen escribe "📍 ${pinLabel}". Si da nueva dirección: procesa normalmente.]`
     }
 
     // Inject [SISTEMA] after-hours tag directly into the user message so Claude sees
