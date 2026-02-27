@@ -375,10 +375,11 @@ async function saveDeliveryAddress(phone, formattedAddress, zone, distanceKm) {
   if (error) console.error('Error saving delivery address:', error)
 }
 
-// Save the raw WhatsApp location pin as a single JSONB object.
-// Stored exactly as the customer sent it — one column, no splitting.
-async function saveLocationPin(phone, lat, lng) {
-  const pin = { lat, lng }
+// Save the raw location exactly as the customer sent it — one JSONB column.
+// Accepts either native pin coords: saveLocationPin(phone, { lat, lng })
+//            or a Google Maps URL:  saveLocationPin(phone, { url: "https://maps..." })
+async function saveLocationPin(phone, pinData) {
+  const pin = pinData
   console.log(`[saveLocationPin] Saving pin for ${phone}:`, pin)
   const { data, error } = await supabase
     .from('customers')

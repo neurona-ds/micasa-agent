@@ -262,7 +262,7 @@ app.post('/webhook', async (req, res) => {
       processingPhones.add(customerPhone)
       try {
         // Save the raw pin immediately — before geocoding, non-blocking
-        saveLocationPin(customerPhone, lat, lng).catch(err =>
+        saveLocationPin(customerPhone, { lat, lng }).catch(err =>
           console.warn('saveLocationPin failed (non-blocking):', err.message)
         )
 

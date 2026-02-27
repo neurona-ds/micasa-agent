@@ -1,5 +1,5 @@
 const Anthropic = require('@anthropic-ai/sdk')
-const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getAlmuerzoDeliveryTiers, getDeliveryZoneByAddress, advanceCycleIfNeeded, getWeekAlmuerzos, getPaymentMethods, saveDeliveryAddress, getCustomerAddress, getBusinessHours, savePendingOrder, getPendingOrder, clearPendingOrder } = require('./memory')
+const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getAlmuerzoDeliveryTiers, getDeliveryZoneByAddress, advanceCycleIfNeeded, getWeekAlmuerzos, getPaymentMethods, saveDeliveryAddress, saveDeliveryZoneOnly, saveLocationPin, getCustomerAddress, getBusinessHours, savePendingOrder, getPendingOrder, clearPendingOrder } = require('./memory')
 const { createZohoDeliveryRecord } = require('./zoho')
 const path = require('path')
 require('dotenv').config({ path: path.resolve(__dirname, '../.env'), override: true })
@@ -917,11 +917,23 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección geocodificada → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente.]`
         console.log(`Zone injected: Zone ${zone} (${distanceKm}km)`)
 
-        // Persist geocoded result to customers table — primary address source for Zoho.
-        // Non-blocking: a DB failure here must never break the conversation flow.
-        saveDeliveryAddress(customerPhone, formattedAddress, zone, distanceKm).catch(err =>
-          console.warn('saveDeliveryAddress failed (non-blocking):', err.message)
-        )
+        // Google Maps URL → save as location pin + zone only (no text address to store)
+        // Regular text address → save geocoded result as the customer's address
+        const isMapsUrl = /https?:\/\/(maps\.app\.goo\.gl|goo\.gl\/maps|maps\.google\.com|www\.google\.com\/maps)/i.test(customerMessage)
+        if (isMapsUrl) {
+          saveLocationPin(customerPhone, { url: customerMessage }).catch(err =>
+            console.warn('saveLocationPin (maps url) failed:', err.message)
+          )
+          saveDeliveryZoneOnly(customerPhone, zone, distanceKm).catch(err =>
+            console.warn('saveDeliveryZoneOnly (maps url) failed:', err.message)
+          )
+          console.log(`Maps URL → saved as location pin, zone only (no text address)`)
+        } else {
+          // Non-blocking: a DB failure here must never break the conversation flow.
+          saveDeliveryAddress(customerPhone, formattedAddress, zone, distanceKm).catch(err =>
+            console.warn('saveDeliveryAddress failed (non-blocking):', err.message)
+          )
+        }
       } else {
         console.warn(`Zone calculation failed — Claude will estimate from address text`)
       }
