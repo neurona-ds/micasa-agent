@@ -221,8 +221,6 @@ async function createZohoDeliveryRecord(orderData) {
 
     // Financial fields
     Valor_Venta:        orderData.total        || 0,
-    Costo_de_Envio:     orderData.deliveryCost ?? 0,
-    // Delivery cost at time of order — stored for comparison with actual charged amount
     Envio_Cobrado:      orderData.deliveryCost ?? 0,
 
     // Status — always "Pendiente de Pago" on creation; human updates to "Pago Confirmado"
