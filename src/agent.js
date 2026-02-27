@@ -800,6 +800,41 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     // Save customer to db
     await upsertCustomer(customerPhone, customerName)
 
+    // ── CAMPAIGN OVERRIDE: Fanesca Semana Santa 2026 ───────────────────────────
+    // TODO: REMOVE after campaign ends.
+    // Fires for the Meta Ads CTA message "Quiero información sobre la Fanesca"
+    // (campaign: Fanesca_Quito_WhatsApp_2026). Bypasses Claude entirely.
+    if (/quiero informaci[oó]n sobre la fanesca/i.test(customerMessage.trim())) {
+      const fanescaReply = [
+        '¡Claro! Te cuento sobre nuestra Fanesca 🍲',
+        '',
+        '',
+        '🔥 *FANESCA TRADICIONAL QUITEÑA*',
+        '',
+        'La mejor de Quito!',
+        '✨ Lo que nos diferencia:',
+        '',
+        '✅ Receta tradicional familiar',
+        '✅ Ingredientes frescos del día',
+        '✅ Preparación artesanal',
+        '✅ Delivery GRATIS en ciertas zonas de Quito',
+        '',
+        '💰 *Precios:*',
+        '- Porción de 1 Litro $9.50',
+        '- Fanesca Congelada 2 porciones de 350gr $9.75',
+        '',
+        '📅 Para semana santa tenemos pocas unidades disponibles pero aún puedes reservar la tuya',
+        '',
+        '¿Te gustaría hacer tu pedido o tienes alguna pregunta específica?',
+        '1️⃣ Hacer pedido ahora',
+        '2️⃣ Hablar con un asesor'
+      ].join('\n')
+      await saveMessage(customerPhone, 'user', customerMessage)
+      await saveMessage(customerPhone, 'assistant', fanescaReply)
+      return { reply: fanescaReply, needsHandoff: false, needsPaymentHandoff: false }
+    }
+    // ──────────────────────────────────────────────────────────────────────────
+
     // Auto-advance cycle if a new week has started
     const currentCycle = await advanceCycleIfNeeded()
 
