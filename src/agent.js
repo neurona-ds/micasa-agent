@@ -828,9 +828,7 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         '',
         '📅 Para semana santa tenemos pocas unidades disponibles pero aún puedes reservar la tuya',
         '',
-        '¿Te gustaría hacer tu pedido o tienes alguna pregunta específica?',
-        '1️⃣ Hacer pedido ahora',
-        '2️⃣ Hablar con un asesor'
+        '¿Te gustaría hacer tu pedido o tienes alguna pregunta específica?'
       ].join('\n')
       await saveMessage(customerPhone, 'user', customerMessage)
       await saveMessage(customerPhone, 'assistant', fanescaReply)
