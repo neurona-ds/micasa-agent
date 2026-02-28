@@ -213,8 +213,17 @@ async function createZohoDeliveryRecord(orderData) {
     // Order items — kitchen-facing notes
     Notas_de_Cocina:    orderData.itemsText || '',
 
-    // Delivery address
+    // Delivery address (typed text) — Scenario 1
     Direccion:          orderData.address   || '',
+
+    // Raw location pin — Scenario 2: Maps URL or native WhatsApp pin as Google Maps link
+    Ubicacion:          (() => {
+      const pin = orderData.locationPin
+      if (!pin) return ''
+      if (pin.url) return pin.url
+      if (pin.lat != null && pin.lng != null) return `https://maps.google.com/maps?q=${pin.lat},${pin.lng}`
+      return ''
+    })(),
 
     // Pre-computed at order time — slot for almuerzo, raw time or 'Inmediato' for carta
     Horario_de_Entrega: horarioEntrega,

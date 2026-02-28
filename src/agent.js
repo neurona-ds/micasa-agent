@@ -355,8 +355,9 @@ function extractTurnoFromHistory(history) {
  * @param {string} name        - customer name from WATI
  * @returns {Object} orderData ready for createZohoDeliveryRecord()
  */
-// storedAddress: geocoded address saved to DB when Maps API was called — most reliable source.
-function extractOrderDataForZoho(summaryMsg, history, phone, name, storedAddress = null) {
+// storedAddress: typed text address saved to DB — most reliable for Direccion field.
+// storedLocationPin: raw pin object {url} or {lat,lng} — goes to Ubicacion field in Zoho.
+function extractOrderDataForZoho(summaryMsg, history, phone, name, storedAddress = null, storedLocationPin = null) {
   // Strip bold/italic markdown from the raw message before all parsing so that
   // patterns like "📅 **Entrega programada:**" match the same regex as plain text.
   const text = summaryMsg.message.replace(/\*+/g, '')
@@ -497,6 +498,7 @@ function extractOrderDataForZoho(summaryMsg, history, phone, name, storedAddress
     total,
     deliveryCost,
     address,
+    locationPin:    storedLocationPin || null,  // raw pin {url} or {lat,lng} → Zoho Ubicacion
     turno,
     itemsText,
     scheduledDate,    // YYYY-MM-DD or null (kept for reference)
@@ -1104,7 +1106,8 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         history,
         customerPhone,
         customerName,
-        storedGeo?.address || null
+        storedGeo?.address || null,
+        storedGeo?.locationPin || null
       )
       savePendingOrder(customerPhone, snap).catch(err =>
         console.error('savePendingOrder error (non-blocking):', err.message)
@@ -1131,7 +1134,7 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         )
         if (orderSummaryMsg) {
           const geoData = await getCustomerAddress(customerPhone).catch(() => null)
-          orderData = extractOrderDataForZoho(orderSummaryMsg, history, customerPhone, customerName, geoData?.address || null)
+          orderData = extractOrderDataForZoho(orderSummaryMsg, history, customerPhone, customerName, geoData?.address || null, geoData?.locationPin || null)
         }
       }
 
