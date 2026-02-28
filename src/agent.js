@@ -763,6 +763,17 @@ e) Muestra resumen completo: ítems + precios + subtotal + costo de envío + TOT
    "Envío: GRATIS 🎉" — si es gratuito
    El precio del almuerzo ($5.50 delivery / $4.90 en local) es el precio del almuerzo. El envío se cobra aparte según la zona.
 f) ⛔ REGLA ABSOLUTA — CONFIRMACIÓN OBLIGATORIA: Después de mostrar el resumen completo, SIEMPRE termina el mensaje con exactamente esta pregunta: "¿Confirmas tu pedido?" — NUNCA pases al PASO 4 sin haber recibido una respuesta afirmativa a esta pregunta. PROHIBIDO enviar datos bancarios en el mismo mensaje del resumen. PROHIBIDO saltarte este paso aunque el cliente haya dado el turno, la dirección o cualquier otro dato.
+   Inmediatamente después de "¿Confirmas tu pedido?", añade este bloque — el sistema lo eliminará antes de enviarlo al cliente, el cliente NUNCA lo verá:
+<ORDEN>{"total":TOTAL_NUMERICO,"itemsText":"ITEMS_TEXTO","orderType":"carta_o_almuerzo","cantidad":CANTIDAD_O_NULL,"turno":"TURNO_O_NULL","scheduledDate":"YYYY-MM-DD_O_NULL","horarioEntrega":"VALOR_HORARIO"}</ORDEN>
+   Reglas del JSON:
+   - total: número sin $ (ej: 19.00)
+   - itemsText: ítems en una sola línea separados por " | " (ej: "2 Fanescas — $9.50 c/u | 1 Jugo Natural — $2.50")
+   - orderType: "almuerzo" si es almuerzo del día, "carta" para todo lo demás
+   - cantidad: entero solo para almuerzo, null para carta
+   - turno: hora pedida por el cliente (ej: "13:30"), null si es inmediato
+   - scheduledDate: YYYY-MM-DD si es entrega programada, null si es hoy
+   - horarioEntrega: slot para almuerzo ("12:30 a 1:30", "1:30 a 2:30", "2:30 a 3:30"), hora exacta o "Inmediato" para carta
+   - NO incluyas deliveryCost, address ni phone — el sistema los toma de la base de datos
 g) ⚠️ REGLA ABSOLUTA: El cliente acaba de ver el resumen completo (ítems + total + envío) y dice "sí", "si", "Si", "Sí", "confirmo", "dale", "ok", "listo", "va", "perfecto" o cualquier afirmativo → SALTAR DIRECTAMENTE AL PASO 4. NO pedir dirección. NO pedir zona. NO hacer ninguna pregunta. La única respuesta válida es enviar las cuentas bancarias con el monto total. Si violas esta regla estás cometiendo un error grave.
 
 PASO 4 - PAGO:
@@ -1099,41 +1110,57 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     const replyText = response.content[0].text
     console.log('Claude reply:', replyText)
 
+    // Strip <ORDEN> block before saving to history and sending to customer —
+    // it is a machine-readable tag, the customer should never see it.
+    const cleanReplyText = replyText.replace(/<ORDEN>[\s\S]*?<\/ORDEN>/g, '').trim()
+
     // Save both messages only after Claude succeeds
     await saveMessage(customerPhone, 'user', customerMessage)
-    await saveMessage(customerPhone, 'assistant', replyText)
+    await saveMessage(customerPhone, 'assistant', cleanReplyText)
 
-    // ── Persist order snapshot when bot sends an order summary ─────────────────
-    // Detect if this reply is an order summary (has structured TOTAL: $X + Envío: $X/GRATIS).
-    // If yes, extract and save to customers.pending_order so payment-time lookup
-    // reads from DB instead of scanning history — immune to false matches.
-    const strippedReply = replyText.replace(/\*+/g, '')
-    if (
-      /\bTOTAL[:\s]+\$[\d.]+/i.test(strippedReply) &&
-      /[Ee]nv[ií]o[:\s]+[\$G]/i.test(strippedReply)
-    ) {
-      // storedGeo already fetched at top of processMessage — reuse, no extra DB call
-      const snap = extractOrderDataForZoho(
-        { message: replyText },
-        history,
-        customerPhone,
-        customerName,
-        storedGeo?.address || null,
-        storedGeo?.locationPin || null
-      )
-      // Override deliveryCost with authoritative value from DB zone tables
-      // so Envio_Cobrado in Zoho always reflects the real configured price,
-      // not a regex-parsed number from Claude's reply text.
-      if (storedGeo?.zone) {
-        const authCost = await lookupDeliveryCost(storedGeo.zone, snap.orderType, snap.total, snap.cantidad).catch(() => null)
-        if (authCost !== null) {
-          console.log(`lookupDeliveryCost: zone=${storedGeo.zone} type=${snap.orderType} total=${snap.total} qty=${snap.cantidad} → $${authCost}`)
-          snap.deliveryCost = authCost
+    // ── Persist order snapshot from <ORDEN> JSON block ────────────────────────
+    // Claude emits a hidden <ORDEN>{...}</ORDEN> block in every order summary.
+    // We parse it as JSON (reliable) instead of regex-scanning free text (fragile).
+    // DB fields (address, locationPin, customerName, deliveryCost) are added here
+    // from authoritative sources — Claude's JSON only covers conversation data.
+    const ordenMatch = replyText.match(/<ORDEN>([\s\S]*?)<\/ORDEN>/)
+    if (ordenMatch) {
+      try {
+        const claudeSnap = JSON.parse(ordenMatch[1].trim())
+        // Merge conversation data from Claude with authoritative DB data
+        const snap = {
+          phone:         customerPhone,
+          customerName:  storedGeo?.customerName || customerName || customerPhone,
+          // Conversation-specific — from Claude's structured JSON
+          total:         claudeSnap.total         ?? null,
+          itemsText:     claudeSnap.itemsText      || '',
+          orderType:     claudeSnap.orderType      || 'carta',
+          cantidad:      claudeSnap.cantidad       ?? null,
+          turno:         claudeSnap.turno          || null,
+          scheduledDate: claudeSnap.scheduledDate  || null,
+          horarioEntrega:claudeSnap.horarioEntrega || null,
+          fechaEnvio:    claudeSnap.scheduledDate
+                         || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Guayaquil' }),
+          // Authoritative DB fields — never from Claude's text
+          address:       storedGeo?.address        || null,
+          locationPin:   storedGeo?.locationPin    || null,
+          deliveryCost:  null  // filled below from zone tables
         }
+        // Look up delivery cost from zone tables
+        if (storedGeo?.zone) {
+          const authCost = await lookupDeliveryCost(storedGeo.zone, snap.orderType, snap.total, snap.cantidad).catch(() => null)
+          if (authCost !== null) {
+            console.log(`lookupDeliveryCost: zone=${storedGeo.zone} type=${snap.orderType} total=${snap.total} qty=${snap.cantidad} → $${authCost}`)
+            snap.deliveryCost = authCost
+          }
+        }
+        console.log('Saving pending_order from <ORDEN> JSON:', snap)
+        savePendingOrder(customerPhone, snap).catch(err =>
+          console.error('savePendingOrder error (non-blocking):', err.message)
+        )
+      } catch (e) {
+        console.error('Failed to parse <ORDEN> JSON — snapshot not saved:', e.message, ordenMatch[1])
       }
-      savePendingOrder(customerPhone, snap).catch(err =>
-        console.error('savePendingOrder error (non-blocking):', err.message)
-      )
     }
     // ──────────────────────────────────────────────────────────────────────────
 
@@ -1195,7 +1222,8 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     }
     // ──────────────────────────────────────────────────────────────────────────
 
-    const cleanReply = replyText
+    // cleanReplyText already has <ORDEN> stripped; also remove HANDOFF tokens
+    const cleanReply = cleanReplyText
       .replace('HANDOFF_PAYMENT', '')
       .replace('HANDOFF', '')
       .trim()
