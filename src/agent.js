@@ -819,6 +819,13 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     // Fires for the Meta Ads CTA message "Quiero información sobre la Fanesca"
     // (campaign: Fanesca_Quito_WhatsApp_2026). Bypasses Claude entirely.
     if (/quiero informaci[oó]n sobre la fanesca/i.test(customerMessage.trim())) {
+      // Pull Fanesca products live from DB so prices are always current
+      const allProducts = await getProducts()
+      const fanescaProducts = allProducts.filter(p => /fanesca/i.test(p.name))
+      const priceLines = fanescaProducts.length > 0
+        ? fanescaProducts.map(p => `- ${p.name}: $${Number(p.price).toFixed(2)}`)
+        : ['- Fanesca 1LT Lista para consumir: $9.50']  // fallback if DB empty
+
       const fanescaReply = [
         '¡Claro! Te cuento sobre nuestra Fanesca 🍲',
         '',
@@ -834,8 +841,7 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         '✅ Delivery GRATIS en ciertas zonas de Quito',
         '',
         '💰 *Precios:*',
-        '- Fanesca 1LT Lista para consumir (Con sus guarniciones) $9.50',
-        '- Congelada Caja de 2 Unidades (350g c/u): $9.75',
+        ...priceLines,
         '',
         '📅 Para semana santa tenemos pocas unidades disponibles pero aún puedes reservar la tuya',
         '',
