@@ -1160,6 +1160,29 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         }
       }
 
+      // ── Override with authoritative DB values at send time ───────────────────
+      // Conversation-specific fields (total, itemsText, turno, etc.) stay from
+      // pending_order. But address, locationPin, customerName, and deliveryCost
+      // are always re-fetched fresh from the customers table so Zoho always gets
+      // the real stored values, never a snapshot of bot-parsed text.
+      if (orderData) {
+        const freshGeo = await getCustomerAddress(customerPhone).catch(() => null)
+        if (freshGeo) {
+          if (freshGeo.address)      orderData.address      = freshGeo.address
+          if (freshGeo.locationPin)  orderData.locationPin  = freshGeo.locationPin
+          if (freshGeo.customerName) orderData.customerName = freshGeo.customerName
+          if (freshGeo.zone) {
+            const authCost = await lookupDeliveryCost(freshGeo.zone, orderData.orderType, orderData.total, orderData.cantidad).catch(() => null)
+            if (authCost !== null) {
+              console.log(`Zoho: deliveryCost overridden from DB — zone=${freshGeo.zone} → $${authCost}`)
+              orderData.deliveryCost = authCost
+            }
+          }
+        }
+        console.log('Zoho: final orderData before send', orderData)
+      }
+      // ─────────────────────────────────────────────────────────────────────────
+
       if (orderData) {
         console.log('Zoho: firing delivery record creation for', customerPhone, orderData)
         createZohoDeliveryRecord(orderData).catch(err =>

@@ -551,7 +551,7 @@ async function clearPendingOrder(phone) {
 async function getCustomerAddress(phone) {
   const { data, error } = await supabase
     .from('customers')
-    .select('last_delivery_address, last_delivery_zone, last_delivery_distance_km, last_location_pin')
+    .select('name, last_delivery_address, last_delivery_zone, last_delivery_distance_km, last_location_pin')
     .eq('phone', phone)
     .single()
 
@@ -563,10 +563,11 @@ async function getCustomerAddress(phone) {
   if (!hasAddress && !hasPin) return null
 
   return {
+    customerName: data.name || null,
     address: data.last_delivery_address || null,
     zone: data.last_delivery_zone || null,
     distanceKm: data.last_delivery_distance_km || null,
-    locationPin: data.last_location_pin || null   // { lat, lng }
+    locationPin: data.last_location_pin || null
   }
 }
 
