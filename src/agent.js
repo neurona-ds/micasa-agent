@@ -989,8 +989,33 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       const pinLabel = storedGeo.locationPin.url
         ? storedGeo.locationPin.url                 // Maps URL → show the link
         : 'Ubicación compartida vía WhatsApp'       // native lat/lng pin → generic label
-      const zoneInfo = storedGeo.zone ? ` Zona interna: ${storedGeo.zone} (NO mencionar al cliente).` : ''
-      enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una ubicación guardada de una sesión anterior: "${pinLabel}".${zoneInfo} Al pedir la dirección de entrega pregunta EXACTAMENTE: "¿Enviamos a tu ubicación guardada — ${pinLabel} — o prefieres indicar una nueva? 📍" — Si confirma: cotiza el envío usando la zona ya calculada${storedGeo.zone ? ` (Zona ${storedGeo.zone})` : ''} y en el resumen escribe "📍 ${pinLabel}". Si da nueva dirección: procesa normalmente.]`
+
+      // Recover zone if it wasn't stored (e.g. URL had ?g_st=aw when first saved).
+      // Re-resolve now so Claude always gets zone info for stored pins.
+      let pinZone = storedGeo.zone || null
+      if (!pinZone) {
+        try {
+          let coords = storedGeo.locationPin.lat != null
+            ? { lat: storedGeo.locationPin.lat, lng: storedGeo.locationPin.lng }
+            : storedGeo.locationPin.url
+              ? await resolveGoogleMapsUrl(storedGeo.locationPin.url)
+              : null
+          if (coords) {
+            const zoneResult = await getDeliveryZoneByCoordinates(coords.lat, coords.lng)
+            if (zoneResult) {
+              pinZone = zoneResult.zone
+              // Persist the recovered zone so next turn doesn't need to re-resolve
+              saveDeliveryZoneOnly(customerPhone, zoneResult.zone, zoneResult.distanceKm).catch(() => {})
+              console.log(`[storedPin] Zone recovered: ${pinZone} (${zoneResult.distanceKm}km)`)
+            }
+          }
+        } catch (e) {
+          console.warn('[storedPin] Zone recovery failed:', e.message)
+        }
+      }
+
+      const zoneInfo = pinZone ? ` Zona interna: ${pinZone} (NO mencionar al cliente).` : ''
+      enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una ubicación guardada de una sesión anterior: "${pinLabel}".${zoneInfo} Al pedir la dirección de entrega pregunta EXACTAMENTE: "¿Enviamos a tu ubicación guardada — ${pinLabel} — o prefieres indicar una nueva? 📍" — Si confirma: cotiza el envío usando la zona ya calculada${pinZone ? ` (Zona ${pinZone})` : ''} y en el resumen escribe "📍 ${pinLabel}". Si da nueva dirección: procesa normalmente.]`
     }
 
     // Inject [SISTEMA] after-hours tag directly into the user message so Claude sees

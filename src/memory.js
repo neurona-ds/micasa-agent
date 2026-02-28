@@ -308,7 +308,11 @@ async function getDeliveryZoneByAddress(customerAddress) {
  */
 async function resolveGoogleMapsUrl(url) {
   try {
-    const response = await axios.get(url, {
+    // Strip Google Maps tracking params (e.g. ?g_st=aw added by iOS share sheet)
+    // before following the redirect — they can alter the redirect destination
+    // and prevent coordinate extraction from the final URL.
+    const cleanUrl = url.replace(/[?&]g_st=[^&]*/g, '').replace(/[?&]$/, '')
+    const response = await axios.get(cleanUrl, {
       maxRedirects: 0,
       validateStatus: status => status >= 300 && status < 400,
       timeout: 5000,
