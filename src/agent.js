@@ -1,5 +1,5 @@
 const Anthropic = require('@anthropic-ai/sdk')
-const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getAlmuerzoDeliveryTiers, getDeliveryZoneByAddress, advanceCycleIfNeeded, getWeekAlmuerzos, getPaymentMethods, saveDeliveryAddress, saveDeliveryZoneOnly, saveLocationPin, getCustomerAddress, getBusinessHours, savePendingOrder, getPendingOrder, clearPendingOrder } = require('./memory')
+const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getAlmuerzoDeliveryTiers, getDeliveryZoneByAddress, getDeliveryZoneByCoordinates, resolveGoogleMapsUrl, advanceCycleIfNeeded, getWeekAlmuerzos, getPaymentMethods, saveDeliveryAddress, saveDeliveryZoneOnly, saveLocationPin, getCustomerAddress, getBusinessHours, savePendingOrder, getPendingOrder, clearPendingOrder } = require('./memory')
 const { createZohoDeliveryRecord } = require('./zoho')
 const path = require('path')
 require('dotenv').config({ path: path.resolve(__dirname, '../.env'), override: true })
@@ -915,23 +915,37 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     let enrichedMessage = customerMessage
 
     if (isMapsUrl) {
-      // ── Maps URL: always save pin + geocode + inject zone ─────────────────
-      // Runs regardless of what the bot last said — zone is always needed for pricing.
-      console.log(`Maps URL detected — saving pin + geocoding: ${customerMessage.trim()}`)
-      saveLocationPin(customerPhone, { url: customerMessage.trim() }).catch(err =>
+      // ── Maps URL: resolve redirect → extract real coords → accurate zone ──
+      // Runs regardless of conversation state — zone is always needed for pricing.
+      const urlTrimmed = customerMessage.trim()
+      console.log(`Maps URL detected — resolving redirect: ${urlTrimmed}`)
+
+      // Step 1: follow the redirect to get actual lat/lng (no API key, no cost)
+      const resolvedCoords = await resolveGoogleMapsUrl(urlTrimmed)
+
+      // Step 2: save pin — include coords if resolved so Zoho has them too
+      const pinData = resolvedCoords
+        ? { url: urlTrimmed, lat: resolvedCoords.lat, lng: resolvedCoords.lng }
+        : { url: urlTrimmed }
+      saveLocationPin(customerPhone, pinData).catch(err =>
         console.warn('[agent] saveLocationPin (maps url) failed:', err.message)
       )
-      const zoneResult = await getDeliveryZoneByAddress(customerMessage)
+
+      // Step 3: calculate zone — use real coords if resolved, else fall back to geocoding URL
+      const zoneResult = resolvedCoords
+        ? await getDeliveryZoneByCoordinates(resolvedCoords.lat, resolvedCoords.lng)
+        : await getDeliveryZoneByAddress(urlTrimmed)
+
       if (zoneResult) {
         const { zone, distanceKm, formattedAddress } = zoneResult
         saveDeliveryZoneOnly(customerPhone, zone, distanceKm).catch(err =>
           console.warn('saveDeliveryZoneOnly (maps url) failed:', err.message)
         )
         const orderTypeNote = buildOrderTypeNote()
-        enrichedMessage = `${customerMessage}\n\n[SISTEMA: Ubicación Maps URL geocodificada → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido escribe la dirección así: "📍 ${customerMessage.trim()}"]`
-        console.log(`Maps URL zone injected: Zone ${zone} (${distanceKm}km)`)
+        enrichedMessage = `${customerMessage}\n\n[SISTEMA: Ubicación Maps URL → coords (${resolvedCoords?.lat ?? '?'},${resolvedCoords?.lng ?? '?'}) | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido escribe la dirección así: "📍 ${urlTrimmed}"]`
+        console.log(`Maps URL zone injected: Zone ${zone} (${distanceKm}km) via ${resolvedCoords ? 'real coords' : 'geocoding fallback'}`)
       } else {
-        console.warn(`Maps URL geocoding failed — Claude will not have zone info`)
+        console.warn(`Maps URL zone calculation failed — Claude will not have zone info`)
       }
     } else if (lastBotAskedAddress && looksLikeAddress) {
       // ── Text address: geocode only when bot asked for it ──────────────────

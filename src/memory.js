@@ -302,6 +302,54 @@ async function getDeliveryZoneByAddress(customerAddress) {
 }
 
 /**
+ * Resolve a Google Maps short URL (maps.app.goo.gl) by following its redirect.
+ * Returns { lat, lng } extracted from the redirect URL, or null if not found.
+ * No API key needed — just an HTTP redirect follow.
+ */
+async function resolveGoogleMapsUrl(url) {
+  try {
+    const response = await axios.get(url, {
+      maxRedirects: 0,
+      validateStatus: status => status >= 300 && status < 400,
+      timeout: 5000,
+      headers: { 'User-Agent': 'Mozilla/5.0' }
+    })
+    const redirectUrl = response.headers.location
+    if (!redirectUrl) return null
+
+    console.log(`[resolveGoogleMapsUrl] Redirect → ${redirectUrl}`)
+
+    // Extract coordinates from common Google Maps URL patterns:
+    // /maps/search/-0.176050,+-78.474001
+    // /maps/place/@-0.176050,-78.474001,17z
+    // /@-0.176050,-78.474001,17z
+    // ?q=-0.176050,-78.474001
+    const patterns = [
+      /\/maps\/search\/(-?\d+\.?\d*),\+?(-?\d+\.?\d*)/,
+      /\/@(-?\d+\.?\d*),(-?\d+\.?\d*)/,
+      /[?&]q=(-?\d+\.?\d*),\+?(-?\d+\.?\d*)/,
+      /[?&]ll=(-?\d+\.?\d*),\+?(-?\d+\.?\d*)/
+    ]
+
+    for (const pattern of patterns) {
+      const match = redirectUrl.match(pattern)
+      if (match) {
+        const lat = parseFloat(match[1])
+        const lng = parseFloat(match[2])
+        console.log(`[resolveGoogleMapsUrl] Coords extracted: lat=${lat}, lng=${lng}`)
+        return { lat, lng }
+      }
+    }
+
+    console.warn(`[resolveGoogleMapsUrl] No coords found in redirect: ${redirectUrl}`)
+    return null
+  } catch (err) {
+    console.error('[resolveGoogleMapsUrl] Error:', err.message)
+    return null
+  }
+}
+
+/**
  * Same as getDeliveryZoneByAddress but starts from coordinates (WhatsApp location pin).
  * Skips forward-geocoding; uses reverse-geocoding to get a formatted address,
  * then applies the same Haversine distance + zone logic.
@@ -533,6 +581,7 @@ module.exports = {
   getDeliveryTiers,
   getAlmuerzoDeliveryTiers,
   getDeliveryZoneByAddress,
+  resolveGoogleMapsUrl,
   getDeliveryZoneByCoordinates,
   advanceCycleIfNeeded,
   getWeekAlmuerzos,
