@@ -1127,10 +1127,14 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     if (ordenMatch) {
       try {
         const claudeSnap = JSON.parse(ordenMatch[1].trim())
+        // Re-fetch geo FRESH here — storedGeo was read at the START of this turn,
+        // before the customer's location/address was saved to DB during this turn.
+        // A fresh read captures location pins or addresses saved mid-turn.
+        const freshGeo = await getCustomerAddress(customerPhone).catch(() => null)
         // Merge conversation data from Claude with authoritative DB data
         const snap = {
           phone:         customerPhone,
-          customerName:  storedGeo?.customerName || customerName || customerPhone,
+          customerName:  freshGeo?.customerName || customerName || customerPhone,
           // Conversation-specific — from Claude's structured JSON
           total:         claudeSnap.total         ?? null,
           itemsText:     claudeSnap.itemsText      || '',
@@ -1141,16 +1145,16 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
           horarioEntrega:claudeSnap.horarioEntrega || null,
           fechaEnvio:    claudeSnap.scheduledDate
                          || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Guayaquil' }),
-          // Authoritative DB fields — never from Claude's text
-          address:       storedGeo?.address        || null,
-          locationPin:   storedGeo?.locationPin    || null,
+          // Authoritative DB fields — always from fresh DB read, never from Claude's text
+          address:       freshGeo?.address        || null,
+          locationPin:   freshGeo?.locationPin    || null,
           deliveryCost:  null  // filled below from zone tables
         }
-        // Look up delivery cost from zone tables
-        if (storedGeo?.zone) {
-          const authCost = await lookupDeliveryCost(storedGeo.zone, snap.orderType, snap.total, snap.cantidad).catch(() => null)
+        // Look up delivery cost from zone tables using fresh zone
+        if (freshGeo?.zone) {
+          const authCost = await lookupDeliveryCost(freshGeo.zone, snap.orderType, snap.total, snap.cantidad).catch(() => null)
           if (authCost !== null) {
-            console.log(`lookupDeliveryCost: zone=${storedGeo.zone} type=${snap.orderType} total=${snap.total} qty=${snap.cantidad} → $${authCost}`)
+            console.log(`lookupDeliveryCost: zone=${freshGeo.zone} type=${snap.orderType} total=${snap.total} qty=${snap.cantidad} → $${authCost}`)
             snap.deliveryCost = authCost
           }
         }
