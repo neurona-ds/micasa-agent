@@ -459,6 +459,56 @@ async function saveDeliveryZoneOnly(phone, zone, distanceKm) {
   if (error) console.error('[saveDeliveryZoneOnly] DB error:', error.message)
 }
 
+// ─── Authoritative delivery cost lookup ───────────────────────────────────────
+// Queries the actual DB tier tables to get the definitive delivery cost for a
+// given zone + order type + total/quantity. Used to override the regex-parsed
+// value from Claude's reply text when saving pending_order.
+async function lookupDeliveryCost(zone, orderType, total, cantidad) {
+  try {
+    if (!zone) return null
+
+    if (orderType === 'almuerzo') {
+      const qty = cantidad || 1
+      const { data, error } = await supabase
+        .from('almuerzo_delivery_tiers')
+        .select('delivery_price, is_free, requires_approval')
+        .eq('zone_number', zone)
+        .lte('min_qty', qty)
+        .order('min_qty', { ascending: false })
+        .limit(10)
+
+      if (error || !data?.length) return null
+
+      // Find the tier whose max_qty covers qty (null max_qty = open-ended)
+      const tier = data.find(t => t.max_qty == null || t.max_qty >= qty)
+      if (!tier) return null
+      if (tier.is_free) return 0
+      if (tier.requires_approval) return null
+      return parseFloat(tier.delivery_price)
+    } else {
+      // carta: lookup by order total value
+      const orderTotal = total || 0
+      const { data, error } = await supabase
+        .from('delivery_tiers')
+        .select('delivery_price')
+        .eq('zone_number', zone)
+        .lte('order_min', orderTotal)
+        .order('order_min', { ascending: false })
+        .limit(10)
+
+      if (error || !data?.length) return null
+
+      // Find the tier whose order_max covers the total (null = open-ended)
+      const tier = data.find(t => t.order_max == null || t.order_max >= orderTotal)
+      if (!tier) return null
+      return parseFloat(tier.delivery_price)
+    }
+  } catch (e) {
+    console.error('lookupDeliveryCost error:', e.message)
+    return null
+  }
+}
+
 // ─── Pending order ────────────────────────────────────────────────────────────
 // Saves the fully-extracted orderData object when the bot sends an order summary.
 // At payment time we read this instead of scanning conversation history.
@@ -594,6 +644,7 @@ module.exports = {
   saveDeliveryZoneOnly,
   getCustomerAddress,
   getBusinessHours,
+  lookupDeliveryCost,
   savePendingOrder,
   getPendingOrder,
   clearPendingOrder

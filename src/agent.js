@@ -1,5 +1,5 @@
 const Anthropic = require('@anthropic-ai/sdk')
-const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getAlmuerzoDeliveryTiers, getDeliveryZoneByAddress, getDeliveryZoneByCoordinates, resolveGoogleMapsUrl, advanceCycleIfNeeded, getWeekAlmuerzos, getPaymentMethods, saveDeliveryAddress, saveDeliveryZoneOnly, saveLocationPin, getCustomerAddress, getBusinessHours, savePendingOrder, getPendingOrder, clearPendingOrder } = require('./memory')
+const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getAlmuerzoDeliveryTiers, getDeliveryZoneByAddress, getDeliveryZoneByCoordinates, resolveGoogleMapsUrl, advanceCycleIfNeeded, getWeekAlmuerzos, getPaymentMethods, saveDeliveryAddress, saveDeliveryZoneOnly, saveLocationPin, getCustomerAddress, getBusinessHours, lookupDeliveryCost, savePendingOrder, getPendingOrder, clearPendingOrder } = require('./memory')
 const { createZohoDeliveryRecord } = require('./zoho')
 const path = require('path')
 require('dotenv').config({ path: path.resolve(__dirname, '../.env'), override: true })
@@ -1121,6 +1121,16 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         storedGeo?.address || null,
         storedGeo?.locationPin || null
       )
+      // Override deliveryCost with authoritative value from DB zone tables
+      // so Envio_Cobrado in Zoho always reflects the real configured price,
+      // not a regex-parsed number from Claude's reply text.
+      if (storedGeo?.zone) {
+        const authCost = await lookupDeliveryCost(storedGeo.zone, snap.orderType, snap.total, snap.cantidad).catch(() => null)
+        if (authCost !== null) {
+          console.log(`lookupDeliveryCost: zone=${storedGeo.zone} type=${snap.orderType} total=${snap.total} qty=${snap.cantidad} → $${authCost}`)
+          snap.deliveryCost = authCost
+        }
+      }
       savePendingOrder(customerPhone, snap).catch(err =>
         console.error('savePendingOrder error (non-blocking):', err.message)
       )
