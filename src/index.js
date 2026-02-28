@@ -196,14 +196,14 @@ app.post('/webhook', async (req, res) => {
       return res.status(200).json({ status: 'rate_limited' })
     }
 
-    // Rate limit: enforce minimum 3 seconds between messages per phone.
-    // Threshold is intentionally short — the waMsgId dedup above already catches
-    // true duplicate webhooks. This only guards against rare WATI duplicates that
-    // arrive with a different waMsgId. 3 s is enough for that case while still
-    // letting customers reply quickly after receiving the bot's response.
+    // Rate limit: guard against rare WATI duplicates that arrive with a different
+    // waMsgId (true duplicates with the same ID are already blocked above).
+    // 500 ms is enough to catch network-level duplicates (which arrive in <100 ms)
+    // while NOT blocking a customer who sends a follow-up message or location pin
+    // 1–2 seconds after the bot's reply (previously dropped at 3 s).
     const last = lastProcessed.get(customerPhone) || 0
     const elapsed = Date.now() - last
-    if (elapsed < 3000) {
+    if (elapsed < 500) {
       console.log(`Too soon for ${customerPhone} (${elapsed}ms since last) — ignoring`)
       return res.status(200).json({ status: 'rate_limited' })
     }
