@@ -892,57 +892,57 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       !/\b(quiero|ustedes|abren|cierran|pueden|puedo|tenemos|tengo|tienen|cuándo|cuando|cuánto|cuanto|están|abre|cierra|pronto|dijiste|dices|dijeron)\b/i.test(msgTrimmed)
     )
 
-    // Detect Maps URL unconditionally — save as location pin regardless of conversation state.
-    // This runs before the address-detection block so a Maps URL is always persisted
-    // even if the bot's last message wasn't asking for an address (e.g. after a HANDOFF).
+    // ── Shared helper: build orderTypeNote from history ──────────────────────
+    const buildOrderTypeNote = () => {
+      const orderType = detectOrderTypeFromHistory(history)
+      if (orderType === 'almuerzo') {
+        const qty = detectAlmuerzoQty(history)
+        console.log(`Order type: ALMUERZO (qty=${qty})`)
+        return `Tipo de pedido: ALMUERZO PURO (${qty} unidad${qty !== 1 ? 'es' : ''}). Usar tabla TARIFAS ALMUERZOS para calcular envío.`
+      } else if (orderType === 'mixed') {
+        console.log(`Order type: MIXED`)
+        return `Tipo de pedido: MIXTO (almuerzo + carta). Usar tabla CARTA sobre el total combinado.`
+      } else {
+        console.log(`Order type: CARTA`)
+        return `Tipo de pedido: CARTA. Usar tabla CARTA por valor del pedido.`
+      }
+    }
+
     const isMapsUrl = /https?:\/\/(maps\.app\.goo\.gl|goo\.gl\/maps|maps\.google\.com|www\.google\.com\/maps)/i.test(customerMessage.trim())
+
+    let enrichedMessage = customerMessage
+
     if (isMapsUrl) {
+      // ── Maps URL: always save pin + geocode + inject zone ─────────────────
+      // Runs regardless of what the bot last said — zone is always needed for pricing.
+      console.log(`Maps URL detected — saving pin + geocoding: ${customerMessage.trim()}`)
       saveLocationPin(customerPhone, { url: customerMessage.trim() }).catch(err =>
         console.warn('[agent] saveLocationPin (maps url) failed:', err.message)
       )
-      console.log(`Maps URL detected — saved as location pin: ${customerMessage.trim()}`)
-    }
-
-    let enrichedMessage = customerMessage
-    if (lastBotAskedAddress && looksLikeAddress) {
+      const zoneResult = await getDeliveryZoneByAddress(customerMessage)
+      if (zoneResult) {
+        const { zone, distanceKm, formattedAddress } = zoneResult
+        saveDeliveryZoneOnly(customerPhone, zone, distanceKm).catch(err =>
+          console.warn('saveDeliveryZoneOnly (maps url) failed:', err.message)
+        )
+        const orderTypeNote = buildOrderTypeNote()
+        enrichedMessage = `${customerMessage}\n\n[SISTEMA: Ubicación Maps URL geocodificada → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido escribe la dirección así: "📍 ${customerMessage.trim()}"]`
+        console.log(`Maps URL zone injected: Zone ${zone} (${distanceKm}km)`)
+      } else {
+        console.warn(`Maps URL geocoding failed — Claude will not have zone info`)
+      }
+    } else if (lastBotAskedAddress && looksLikeAddress) {
+      // ── Text address: geocode only when bot asked for it ──────────────────
       console.log(`Address response detected — calling Google Maps for zone`)
       const zoneResult = await getDeliveryZoneByAddress(customerMessage)
       if (zoneResult) {
         const { zone, distanceKm, formattedAddress } = zoneResult
-
-        // Detect order type so Claude uses the right pricing table
-        const orderType = detectOrderTypeFromHistory(history)
-        let orderTypeNote
-        if (orderType === 'almuerzo') {
-          const qty = detectAlmuerzoQty(history)
-          orderTypeNote = `Tipo de pedido: ALMUERZO PURO (${qty} unidad${qty !== 1 ? 'es' : ''}). Usar tabla TARIFAS ALMUERZOS para calcular envío.`
-          console.log(`Order type: ALMUERZO (qty=${qty})`)
-        } else if (orderType === 'mixed') {
-          orderTypeNote = `Tipo de pedido: MIXTO (almuerzo + carta). Usar tabla CARTA sobre el total combinado.`
-          console.log(`Order type: MIXED`)
-        } else {
-          orderTypeNote = `Tipo de pedido: CARTA. Usar tabla CARTA por valor del pedido.`
-          console.log(`Order type: CARTA`)
-        }
-
-        // For Maps URLs: echo the URL in the summary so the customer can verify their location.
-        // For text addresses: show the geocoded formatted address.
-        const summaryLocation = isMapsUrl ? customerMessage.trim() : formattedAddress
-        enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección geocodificada → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido escribe la dirección así: "📍 ${summaryLocation}"]`
+        const orderTypeNote = buildOrderTypeNote()
+        enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección geocodificada → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido escribe la dirección así: "📍 ${formattedAddress}"]`
         console.log(`Zone injected: Zone ${zone} (${distanceKm}km)`)
-
-        if (isMapsUrl) {
-          // Zone saved separately — pin already saved above
-          saveDeliveryZoneOnly(customerPhone, zone, distanceKm).catch(err =>
-            console.warn('saveDeliveryZoneOnly (maps url) failed:', err.message)
-          )
-          console.log(`Maps URL → zone only saved (no text address)`)
-        } else {
-          // Non-blocking: a DB failure here must never break the conversation flow.
-          saveDeliveryAddress(customerPhone, formattedAddress, zone, distanceKm).catch(err =>
-            console.warn('saveDeliveryAddress failed (non-blocking):', err.message)
-          )
-        }
+        saveDeliveryAddress(customerPhone, formattedAddress, zone, distanceKm).catch(err =>
+          console.warn('saveDeliveryAddress failed (non-blocking):', err.message)
+        )
       } else {
         console.warn(`Zone calculation failed — Claude will estimate from address text`)
       }
