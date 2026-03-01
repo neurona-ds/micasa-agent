@@ -821,13 +821,9 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     if (/quiero informaci[oó]n sobre la fanesca/i.test(customerMessage.trim())) {
       // Pull Fanesca products live from DB so prices are always current
       const allProducts = await getProducts()
-      const fanescaProducts = allProducts
-        .filter(p => /fanesca/i.test(p.name))
-        // Main Fanesca first, congelada / alternatives last
-        .sort((a, b) => (/congelada/i.test(a.name) ? 1 : 0) - (/congelada/i.test(b.name) ? 1 : 0))
-      const priceLines = fanescaProducts.length > 0
-        ? fanescaProducts.map(p => `- ${p.name}: $${Number(p.price).toFixed(2)}`)
-        : ['- Fanesca 1LT Lista para consumir: $9.50']  // fallback if DB empty
+      // Only the main (fresh) Fanesca — not the congelada
+      const mainFanesca = allProducts.find(p => /fanesca/i.test(p.name) && !/congelada/i.test(p.name))
+      const mainPrice = mainFanesca ? `$${Number(mainFanesca.price).toFixed(2)}` : '$9.50'
 
       const fanescaReply = [
         '¡Claro! Te cuento sobre nuestra Fanesca 🍲',
@@ -843,10 +839,11 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         '✅ Preparación artesanal',
         '✅ Delivery GRATIS en ciertas zonas de Quito',
         '',
-        '💰 *Precios:*',
-        ...priceLines,
+        `💰 *Precio: ${mainPrice}*`,
         '',
         '📅 Para semana santa tenemos pocas unidades disponibles pero aún puedes reservar la tuya',
+        '',
+        '🧊 También ofrecemos Fanesca Congelada con registro sanitario para preparar en casa.',
         '',
         '¿Te gustaría hacer tu pedido o tienes alguna pregunta específica?'
       ].join('\n')
