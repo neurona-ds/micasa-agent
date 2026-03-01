@@ -821,7 +821,10 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     if (/quiero informaci[oó]n sobre la fanesca/i.test(customerMessage.trim())) {
       // Pull Fanesca products live from DB so prices are always current
       const allProducts = await getProducts()
-      const fanescaProducts = allProducts.filter(p => /fanesca/i.test(p.name))
+      const fanescaProducts = allProducts
+        .filter(p => /fanesca/i.test(p.name))
+        // Main Fanesca first, congelada / alternatives last
+        .sort((a, b) => (/congelada/i.test(a.name) ? 1 : 0) - (/congelada/i.test(b.name) ? 1 : 0))
       const priceLines = fanescaProducts.length > 0
         ? fanescaProducts.map(p => `- ${p.name}: $${Number(p.price).toFixed(2)}`)
         : ['- Fanesca 1LT Lista para consumir: $9.50']  // fallback if DB empty
