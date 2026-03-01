@@ -273,6 +273,11 @@ async function getDeliveryZoneByAddress(customerAddress) {
 
     const { lat: customerLat, lng: customerLng } = geocodeData.results[0].geometry.location
     const formattedAddress = geocodeData.results[0].formatted_address
+    // location_type reflects geocoding precision:
+    // ROOFTOP / RANGE_INTERPOLATED = precise street-level
+    // GEOMETRIC_CENTER = centroid of a region (neighbourhood, city) — imprecise
+    // APPROXIMATE = very rough
+    const locationType = geocodeData.results[0].geometry.location_type || 'UNKNOWN'
 
     // Haversine formula — straight-line distance in km
     const R = 6371
@@ -292,9 +297,9 @@ async function getDeliveryZoneByAddress(customerAddress) {
     else if (distanceKm <= 6) zone = 3
     else zone = 4
 
-    console.log(`Zone calc: "${customerAddress}" → ${formattedAddress} | ${distanceKm.toFixed(2)}km → Zone ${zone}`)
+    console.log(`Zone calc: "${customerAddress}" → ${formattedAddress} | ${distanceKm.toFixed(2)}km → Zone ${zone} | locationType=${locationType}`)
 
-    return { zone, distanceKm: parseFloat(distanceKm.toFixed(2)), formattedAddress }
+    return { zone, distanceKm: parseFloat(distanceKm.toFixed(2)), formattedAddress, locationType }
   } catch (err) {
     console.error('Error in getDeliveryZoneByAddress:', err.message)
     return null

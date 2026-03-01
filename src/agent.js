@@ -970,13 +970,11 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         const { zone, distanceKm, formattedAddress } = zoneResult
         const orderTypeNote = buildOrderTypeNote()
 
-        // Detect low-confidence geocode: Google returned a city/country-level result
-        // (e.g. "Quito, Ecuador" or "Pichincha, Ecuador") because the address was too
-        // vague (apartment number only, building name not found, etc.).
-        // In this case the distance is meaningless — don't assign a zone, ask for clarification.
-        const isLowConfidence = /^(quito|pichincha|ecuador)[,\s]/i.test(formattedAddress.trim())
-          || formattedAddress.trim().toLowerCase() === 'quito, ecuador'
-          || formattedAddress.trim().toLowerCase() === 'ecuador'
+        // Detect low-confidence geocode using Google's own location_type field:
+        // GEOMETRIC_CENTER = centroid of a city/neighbourhood (address not found precisely)
+        // APPROXIMATE      = very rough result
+        // Both mean the distance is unreliable — don't assign a zone, ask for clarification.
+        const isLowConfidence = ['GEOMETRIC_CENTER', 'APPROXIMATE'].includes(zoneResult.locationType)
 
         if (isLowConfidence) {
           console.warn(`Low-confidence geocode: "${customerMessage}" → "${formattedAddress}" — asking for clarification`)
