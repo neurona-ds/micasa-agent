@@ -969,11 +969,25 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       if (zoneResult) {
         const { zone, distanceKm, formattedAddress } = zoneResult
         const orderTypeNote = buildOrderTypeNote()
-        enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección geocodificada → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido escribe la dirección así: "📍 ${formattedAddress}"]`
-        console.log(`Zone injected: Zone ${zone} (${distanceKm}km)`)
-        saveDeliveryAddress(customerPhone, formattedAddress, zone, distanceKm).catch(err =>
-          console.warn('saveDeliveryAddress failed (non-blocking):', err.message)
-        )
+
+        // Detect low-confidence geocode: Google returned a city/country-level result
+        // (e.g. "Quito, Ecuador" or "Pichincha, Ecuador") because the address was too
+        // vague (apartment number only, building name not found, etc.).
+        // In this case the distance is meaningless — don't assign a zone, ask for clarification.
+        const isLowConfidence = /^(quito|pichincha|ecuador)[,\s]/i.test(formattedAddress.trim())
+          || formattedAddress.trim().toLowerCase() === 'quito, ecuador'
+          || formattedAddress.trim().toLowerCase() === 'ecuador'
+
+        if (isLowConfidence) {
+          console.warn(`Low-confidence geocode: "${customerMessage}" → "${formattedAddress}" — asking for clarification`)
+          enrichedMessage = `${customerMessage}\n\n[SISTEMA: La dirección proporcionada no pudo geocodificarse con precisión (resultado: "${formattedAddress}"). No calcules zona todavía. Pide al cliente una referencia más específica: calle principal, intersección o barrio. Ejemplo: "¿Me podrías dar la calle principal o una referencia cercana, como un parque o edificio conocido? 📍"]`
+        } else {
+          enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección geocodificada → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido escribe la dirección así: "📍 ${formattedAddress}"]`
+          console.log(`Zone injected: Zone ${zone} (${distanceKm}km)`)
+          saveDeliveryAddress(customerPhone, formattedAddress, zone, distanceKm).catch(err =>
+            console.warn('saveDeliveryAddress failed (non-blocking):', err.message)
+          )
+        }
       } else {
         console.warn(`Zone calculation failed — Claude will estimate from address text`)
       }

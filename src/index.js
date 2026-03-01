@@ -254,6 +254,20 @@ app.post('/webhook', async (req, res) => {
         console.warn('Could not parse location data:', body.data)
       }
 
+      // Fallback: some WATI versions put coords inside body.text as a Maps URL
+      // e.g. "https://www.google.com/maps/search/-0.19949272274971,-78.481018066406"
+      // when body.data is null. Extract coords from the URL directly.
+      if ((lat == null || lng == null) && typeof body.text === 'string') {
+        const coordMatch = body.text.match(/maps\/search\/(-?\d+\.?\d*),\+?(-?\d+\.?\d*)/)
+          || body.text.match(/[?&]q=(-?\d+\.?\d*),\+?(-?\d+\.?\d*)/)
+          || body.text.match(/\/@(-?\d+\.?\d*),(-?\d+\.?\d*)/)
+        if (coordMatch) {
+          lat = parseFloat(coordMatch[1])
+          lng = parseFloat(coordMatch[2])
+          console.log(`[location handler] Coords extracted from text URL: lat=${lat}, lng=${lng}`)
+        }
+      }
+
       if (lat == null || lng == null) {
         console.warn('Location message missing lat/lng — ignoring')
         return res.status(200).json({ status: 'location_missing_coords' })
