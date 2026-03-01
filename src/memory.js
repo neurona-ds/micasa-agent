@@ -432,22 +432,28 @@ async function saveDeliveryAddress(phone, formattedAddress, zone, distanceKm) {
   if (error) console.error('Error saving delivery address:', error)
 }
 
-// Save the raw location exactly as the customer sent it — one JSONB column.
-// Accepts either native pin coords: saveLocationPin(phone, { lat, lng })
-//            or a Google Maps URL:  saveLocationPin(phone, { url: "https://maps..." })
-async function saveLocationPin(phone, pinData) {
-  const pin = pinData
-  console.log(`[saveLocationPin] Saving pin for ${phone}:`, pin)
+// Save customer location coordinates to the DB.
+// Stores:
+//   last_location_pin  JSONB  → { lat, lng }   — for internal zone calculations
+//   last_location_url  TEXT   → clean Google Maps URL built from coords — sent to Zoho
+// Both columns are always written together so they stay in sync.
+async function saveLocationPin(phone, lat, lng) {
+  const locationUrl = `https://www.google.com/maps?q=${lat},${lng}`
+  console.log(`[saveLocationPin] Saving pin for ${phone}: lat=${lat}, lng=${lng}, url=${locationUrl}`)
   const { data, error } = await supabase
     .from('customers')
-    .update({ last_location_pin: pin })
+    .update({
+      last_location_pin: { lat, lng },
+      last_location_url: locationUrl
+    })
     .eq('phone', phone)
-    .select('phone, last_location_pin')
+    .select('phone, last_location_pin, last_location_url')
 
   if (error) {
     console.error(`[saveLocationPin] DB error for ${phone}:`, error.message, error.details || '')
-    console.error('[saveLocationPin] Hint: run this SQL in Supabase if column is missing:')
+    console.error('[saveLocationPin] Hint: run this SQL in Supabase if columns are missing:')
     console.error('  ALTER TABLE customers ADD COLUMN IF NOT EXISTS last_location_pin JSONB;')
+    console.error('  ALTER TABLE customers ADD COLUMN IF NOT EXISTS last_location_url TEXT;')
   } else {
     console.log(`[saveLocationPin] Saved OK →`, data)
   }
@@ -553,14 +559,15 @@ async function clearPendingOrder(phone) {
 // ──────────────────────────────────────────────────────────────────────────────
 
 // Get the last delivery data stored for a customer.
-// Returns { address, zone, distanceKm, locationPin } or null if nothing stored yet.
+// Returns { address, zone, distanceKm, locationPin, locationUrl } or null if nothing stored yet.
 // address     — typed text address (null if customer only ever shared a pin)
-// locationPin — raw { lat, lng } from WhatsApp location pin (null if only text address)
+// locationPin — { lat, lng } from WhatsApp location pin (null if only text address)
+// locationUrl — clean Google Maps URL built from coords (null if only text address)
 // zone + distanceKm — set from whichever source was most recent
 async function getCustomerAddress(phone) {
   const { data, error } = await supabase
     .from('customers')
-    .select('name, last_delivery_address, last_delivery_zone, last_delivery_distance_km, last_location_pin')
+    .select('name, last_delivery_address, last_delivery_zone, last_delivery_distance_km, last_location_pin, last_location_url')
     .eq('phone', phone)
     .single()
 
@@ -572,11 +579,12 @@ async function getCustomerAddress(phone) {
   if (!hasAddress && !hasPin) return null
 
   return {
-    customerName: data.name || null,
-    address: data.last_delivery_address || null,
-    zone: data.last_delivery_zone || null,
-    distanceKm: data.last_delivery_distance_km || null,
-    locationPin: data.last_location_pin || null
+    customerName:  data.name                       || null,
+    address:       data.last_delivery_address      || null,
+    zone:          data.last_delivery_zone         || null,
+    distanceKm:    data.last_delivery_distance_km  || null,
+    locationPin:   data.last_location_pin          || null,   // { lat, lng }
+    locationUrl:   data.last_location_url          || null    // clean Maps URL for Zoho
   }
 }
 

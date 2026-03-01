@@ -938,13 +938,14 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       // Step 1: follow the redirect to get actual lat/lng (no API key, no cost)
       const resolvedCoords = await resolveGoogleMapsUrl(urlTrimmed)
 
-      // Step 2: save pin — include coords if resolved so Zoho has them too
-      const pinData = resolvedCoords
-        ? { url: urlTrimmed, lat: resolvedCoords.lat, lng: resolvedCoords.lng }
-        : { url: urlTrimmed }
-      saveLocationPin(customerPhone, pinData).catch(err =>
-        console.warn('[agent] saveLocationPin (maps url) failed:', err.message)
-      )
+      // Step 2: save pin — only if we resolved coords (need lat/lng for clean Maps URL).
+      // Writes last_location_pin { lat, lng } + last_location_url (clean Maps URL).
+      // If redirect resolution failed we skip — no coords = no reliable location data.
+      if (resolvedCoords) {
+        saveLocationPin(customerPhone, resolvedCoords.lat, resolvedCoords.lng).catch(err =>
+          console.warn('[agent] saveLocationPin (maps url) failed:', err.message)
+        )
+      }
 
       // Step 3: calculate zone — use real coords if resolved, else fall back to geocoding URL
       const zoneResult = resolvedCoords
@@ -1002,22 +1003,21 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       // Customer previously typed a text address — offer it back verbatim
       enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una dirección registrada: "${storedGeo.address}". Al momento de pedir la dirección de entrega, SIEMPRE ofrece primero esta opción preguntando: "¿Enviamos a tu dirección anterior — ${storedGeo.address} — o prefieres indicar una nueva? 📍". Si el cliente confirma, usa EXACTAMENTE esta dirección. Si da una nueva, úsala y descarta la registrada.]`
     } else if (storedGeo?.locationPin) {
-      // Customer previously shared a location pin (native WhatsApp or Maps URL).
-      // Echo the stored pin back so the customer can verify it's correct.
-      const pinLabel = storedGeo.locationPin.url
-        ? storedGeo.locationPin.url                 // Maps URL → show the link
-        : 'Ubicación compartida vía WhatsApp'       // native lat/lng pin → generic label
+      // Customer previously shared a location pin.
+      // Use the clean Maps URL stored in last_location_url — always built from real coords,
+      // regardless of whether the customer sent a native pin or a Maps URL.
+      const pinLabel = storedGeo.locationUrl || 'Ubicación compartida vía WhatsApp'
 
       // Recover zone if it wasn't stored (e.g. URL had ?g_st=aw when first saved).
       // Re-resolve now so Claude always gets zone info for stored pins.
       let pinZone = storedGeo.zone || null
       if (!pinZone) {
         try {
-          let coords = storedGeo.locationPin.lat != null
+          // last_location_pin now only stores { lat, lng } — no url field.
+          // If coords are present, use them directly.
+          let coords = storedGeo.locationPin?.lat != null
             ? { lat: storedGeo.locationPin.lat, lng: storedGeo.locationPin.lng }
-            : storedGeo.locationPin.url
-              ? await resolveGoogleMapsUrl(storedGeo.locationPin.url)
-              : null
+            : null
           if (coords) {
             const zoneResult = await getDeliveryZoneByCoordinates(coords.lat, coords.lng)
             if (zoneResult) {
@@ -1190,7 +1190,8 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
                          || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Guayaquil' }),
           // Authoritative DB fields — always from fresh DB read, never from Claude's text
           address:       freshGeo?.address        || null,
-          locationPin:   freshGeo?.locationPin    || null,
+          locationPin:   freshGeo?.locationPin    || null,   // { lat, lng } for internal use
+          locationUrl:   freshGeo?.locationUrl    || null,   // clean Maps URL → Zoho Ubicacion
           deliveryCost:  null  // filled below from zone tables
         }
         // Look up delivery cost from zone tables using fresh zone
@@ -1243,7 +1244,8 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         const freshGeo = await getCustomerAddress(customerPhone).catch(() => null)
         if (freshGeo) {
           if (freshGeo.address)      orderData.address      = freshGeo.address
-          if (freshGeo.locationPin)  orderData.locationPin  = freshGeo.locationPin
+          if (freshGeo.locationPin)  orderData.locationPin  = freshGeo.locationPin  // { lat, lng }
+          if (freshGeo.locationUrl)  orderData.locationUrl  = freshGeo.locationUrl  // clean Maps URL → Zoho Ubicacion
           if (freshGeo.customerName) orderData.customerName = freshGeo.customerName
           if (freshGeo.zone) {
             const authCost = await lookupDeliveryCost(freshGeo.zone, orderData.orderType, orderData.total, orderData.cantidad).catch(() => null)
@@ -1308,6 +1310,23 @@ async function triggerZohoOnPayment(customerPhone, customerName) {
     if (!orderData) {
       console.log('Zoho: no pending_order for', customerPhone, '— image is a follow-up, skipping Zoho')
       return
+    }
+
+    // Override with authoritative DB values (address, locationUrl, customerName, deliveryCost)
+    // so Zoho always gets real stored data — never a stale pending_order snapshot.
+    const freshGeo = await getCustomerAddress(customerPhone).catch(() => null)
+    if (freshGeo) {
+      if (freshGeo.address)      orderData.address      = freshGeo.address
+      if (freshGeo.locationPin)  orderData.locationPin  = freshGeo.locationPin
+      if (freshGeo.locationUrl)  orderData.locationUrl  = freshGeo.locationUrl
+      if (freshGeo.customerName) orderData.customerName = freshGeo.customerName
+      if (freshGeo.zone) {
+        const authCost = await lookupDeliveryCost(freshGeo.zone, orderData.orderType, orderData.total, orderData.cantidad).catch(() => null)
+        if (authCost !== null) {
+          console.log(`triggerZohoOnPayment: deliveryCost from DB — zone=${freshGeo.zone} → $${authCost}`)
+          orderData.deliveryCost = authCost
+        }
+      }
     }
 
     console.log('Zoho: firing delivery record (payment image received) for', customerPhone, orderData)

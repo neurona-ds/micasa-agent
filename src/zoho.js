@@ -216,14 +216,13 @@ async function createZohoDeliveryRecord(orderData) {
     // Delivery address (typed text) — Scenario 1
     Direccion:          orderData.address   || '',
 
-    // Raw location pin — Scenario 2: Maps URL or native WhatsApp pin as Google Maps link
-    Ubicacion:          (() => {
-      const pin = orderData.locationPin
-      if (!pin) return ''
-      if (pin.url) return pin.url
-      if (pin.lat != null && pin.lng != null) return `https://maps.google.com/maps?q=${pin.lat},${pin.lng}`
-      return ''
-    })(),
+    // Clean Google Maps URL — always built from real coords, stored in last_location_url.
+    // Fallback: reconstruct from locationPin coords for older pending_order records that
+    // predate the last_location_url column (locationUrl was null, locationPin has lat/lng).
+    Ubicacion:          orderData.locationUrl ||
+                        (orderData.locationPin?.lat != null
+                          ? `https://www.google.com/maps?q=${orderData.locationPin.lat},${orderData.locationPin.lng}`
+                          : ''),
 
     // Pre-computed at order time — slot for almuerzo, raw time or 'Inmediato' for carta
     Horario_de_Entrega: horarioEntrega,
