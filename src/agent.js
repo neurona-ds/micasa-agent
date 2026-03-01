@@ -816,37 +816,76 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
 
     // ── CAMPAIGN OVERRIDE: Fanesca Semana Santa 2026 ───────────────────────────
     // TODO: REMOVE after campaign ends.
-    // Fires for the Meta Ads CTA message "Quiero información sobre la Fanesca"
-    // (campaign: Fanesca_Quito_WhatsApp_2026). Bypasses Claude entirely.
-    if (/quiero informaci[oó]n sobre la fanesca/i.test(customerMessage.trim())) {
-      // Pull Fanesca products live from DB so prices are always current
+    // Catches three entry points from the Meta Ads campaign:
+    //   1. Standard CTA button text: "Quiero información sobre la Fanesca"
+    //   2. Full ad copy paste: customer forwards the Meta ad text (contains fb.me /
+    //      "Dirección por favor" / 3+ ✅ emojis) — means they're already in order mode
+    //   3. Direct price or delivery question mentioning "fanesca" in the same message
+    const _fanMsg = customerMessage.trim()
+    const _mentionsFanesca     = /fanesca/i.test(_fanMsg)
+    const _isStandardCTA       = /quiero informaci[oó]n sobre la fanesca/i.test(_fanMsg)
+    const _isAdCopyPaste       = _mentionsFanesca && (
+      _fanMsg.includes('fb.me') ||
+      /direcci[oó]n por favor/i.test(_fanMsg) ||
+      (_fanMsg.match(/✅/g) || []).length >= 3   // 3+ checkmarks = ad copy body
+    )
+    const _isPriceQuestion     = _mentionsFanesca && !_isStandardCTA &&
+      /precio|cu[aá]nto|cuanto|vale|cuesta/i.test(_fanMsg)
+    const _isDeliveryQuestion  = _mentionsFanesca && !_isStandardCTA &&
+      /entrega|delivery|domicilio|direcci[oó]n|env[ií]o/i.test(_fanMsg)
+
+    if (_isStandardCTA || _isAdCopyPaste || _isPriceQuestion || _isDeliveryQuestion) {
       const allProducts = await getProducts()
-      // Only the main (fresh) Fanesca — not the congelada
       const mainFanesca = allProducts.find(p => /fanesca/i.test(p.name) && !/congelada/i.test(p.name))
       const mainPrice = mainFanesca ? `$${Number(mainFanesca.price).toFixed(2)}` : '$9.50'
 
-      const fanescaReply = [
-        '¡Claro! Te cuento sobre nuestra Fanesca 🍲',
-        '',
-        '',
-        '🔥 *FANESCA TRADICIONAL QUITEÑA*',
-        '',
-        'La mejor de Quito!',
-        '✨ Lo que nos diferencia:',
-        '',
-        '✅ Receta tradicional familiar',
-        '✅ Ingredientes frescos del día',
-        '✅ Preparación artesanal',
-        '✅ Delivery GRATIS en ciertas zonas de Quito',
-        '',
-        `💰 *Precio: ${mainPrice}*`,
-        '',
-        '📅 Para semana santa tenemos pocas unidades disponibles pero aún puedes reservar la tuya',
-        '',
-        '🧊 También ofrecemos Fanesca Congelada con registro sanitario para preparar en casa.',
-        '',
-        '¿Te gustaría hacer tu pedido o tienes alguna pregunta específica?'
-      ].join('\n')
+      let fanescaReply
+
+      if (_isAdCopyPaste || _isDeliveryQuestion) {
+        // Customer is already in "order mode" (forwarded ad copy or asked about delivery)
+        // Skip the pitch — go straight to order intake
+        fanescaReply = [
+          '¡Hola! 😊 Con gusto te tomamos tu pedido de Fanesca.',
+          '',
+          `💰 *Precio: ${mainPrice}* — bacalao opcional incluido sin costo adicional 🍲`,
+          '',
+          '¿La quieres para entrega a domicilio o consumo en el local? 🏠🚗'
+        ].join('\n')
+      } else if (_isPriceQuestion) {
+        // Just asking the price — quick answer + soft CTA
+        fanescaReply = [
+          `¡Claro! 😊 Nuestra Fanesca Tradicional Quiteña tiene un precio de *${mainPrice}*.`,
+          '',
+          'El bacalao es opcional e incluido sin costo adicional 🍲',
+          '',
+          '📅 Para semana santa tenemos pocas unidades — ¿te gustaría reservar la tuya?'
+        ].join('\n')
+      } else {
+        // Standard CTA — full campaign intro
+        fanescaReply = [
+          '¡Claro! Te cuento sobre nuestra Fanesca 🍲',
+          '',
+          '',
+          '🔥 *FANESCA TRADICIONAL QUITEÑA*',
+          '',
+          'La mejor de Quito!',
+          '✨ Lo que nos diferencia:',
+          '',
+          '✅ Receta tradicional familiar',
+          '✅ Ingredientes frescos del día',
+          '✅ Preparación artesanal',
+          '✅ Delivery GRATIS en ciertas zonas de Quito',
+          '',
+          `💰 *Precio: ${mainPrice}*`,
+          '',
+          '📅 Para semana santa tenemos pocas unidades disponibles pero aún puedes reservar la tuya',
+          '',
+          '🧊 También ofrecemos Fanesca Congelada con registro sanitario para preparar en casa.',
+          '',
+          '¿Te gustaría hacer tu pedido o tienes alguna pregunta específica?'
+        ].join('\n')
+      }
+
       await saveMessage(customerPhone, 'user', customerMessage)
       await saveMessage(customerPhone, 'assistant', fanescaReply)
       return { reply: fanescaReply, needsHandoff: false, needsPaymentHandoff: false }
