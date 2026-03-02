@@ -8,6 +8,12 @@ const client = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
 })
 
+// In-process flag: phone → true when a low-confidence geocode was just sent.
+// Signals the NEXT message should be treated as a clarification reference and re-geocoded.
+// Using a Map instead of parsing Claude's reply text avoids fragile keyword matching.
+// Cleared on successful re-geocode or when the session ends.
+const geocodeClarificationPending = new Map()
+
 // Return a Date object representing the current moment in Ecuador time (UTC-5).
 // Ecuador does not observe DST so this offset is always fixed.
 // We use this everywhere we need "today" — using raw new Date() returns UTC
@@ -944,13 +950,10 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       lastBotMsg.message.includes('📍')
     )
 
-    // Bug 1 fix: detect when bot asked for CLARIFICATION after a low-confidence geocode.
-    // The low-confidence prompt includes "geocodificarse" or "referencia más específica" + "📍".
-    // When the customer replies with a reference, we need to re-geocode that reference text.
-    const lastBotAskedClarification = lastBotMsg && !lastBotAskedAddress && (
-      (lastBotMsg.message.includes('geocodificarse') || lastBotMsg.message.includes('referencia más específica') || lastBotMsg.message.includes('referencia cercana')) &&
-      lastBotMsg.message.includes('📍')
-    )
+    // Bug 1 fix: detect when the PREVIOUS turn asked for clarification after low-confidence geocode.
+    // We use an in-process Map flag (geocodeClarificationPending) set when isLowConfidence fires,
+    // rather than parsing Claude's reply text — Claude's wording varies, making keyword checks fragile.
+    const lastBotAskedClarification = geocodeClarificationPending.get(customerPhone) === true
 
     // Quick sanity check: is this message plausibly an address?
     // Avoids geocoding short replies, turn-time answers, and conversational sentences.
@@ -1058,6 +1061,9 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
           saveRawAddress(customerPhone, customerMessage.trim()).catch(err =>
             console.warn('saveRawAddress (low-confidence) failed:', err.message)
           )
+          // Flag: next message from this customer is a clarification reference → re-geocode it
+          geocodeClarificationPending.set(customerPhone, true)
+          console.log(`[geocode] Clarification pending set for ${customerPhone}`)
         } else {
           enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección geocodificada → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido escribe la dirección así: "📍 ${formattedAddress}"]`
           console.log(`Zone injected: Zone ${zone} (${distanceKm}km)`)
@@ -1077,6 +1083,9 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       // Customer gave a reference like "Cercano a Los Pinos y Galo Plaza Lasso" after
       // the bot asked for a more specific address. Try geocoding this reference text.
       console.log(`Clarification reference detected — re-geocoding: "${customerMessage}"`)
+      // Clear the flag regardless of outcome — don't loop indefinitely
+      geocodeClarificationPending.delete(customerPhone)
+
       const zoneResult = await getDeliveryZoneByAddress(customerMessage)
 
       if (zoneResult) {
@@ -1217,7 +1226,8 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       const inPersonReply = '¡Perfecto! 😊 Te estaremos esperando. El pago se realiza directamente en el local. ¡Hasta pronto! 👋'
       await saveMessage(customerPhone, 'user', customerMessage, sessionId)
       await saveMessage(customerPhone, 'assistant', inPersonReply, sessionId)
-      // Conversation complete — end session so next interaction starts fresh
+      // Conversation complete — end session and clear clarification flag
+      geocodeClarificationPending.delete(customerPhone)
       endSession(customerPhone).catch(() => {})
       return {
         reply: inPersonReply,
@@ -1395,7 +1405,8 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         createZohoDeliveryRecord(orderData).catch(err =>
           console.error('Zoho delivery record failed (non-blocking):', err.message)
         )
-        // Order complete — clear snapshot and end session so next message starts fresh
+        // Order complete — clear snapshot, clarification flag, and end session
+        geocodeClarificationPending.delete(customerPhone)
         clearPendingOrder(customerPhone).catch(() => {})
         endSession(customerPhone).catch(() => {})
       } else {
@@ -1466,8 +1477,8 @@ async function triggerZohoOnPayment(customerPhone, customerName) {
     createZohoDeliveryRecord(orderData).catch(err =>
       console.error('Zoho delivery record failed (non-blocking):', err.message)
     )
-    // Order complete — clear snapshot and end session so the customer's
-    // next message starts a fresh session with no order history bleed-through.
+    // Order complete — clear snapshot, clarification flag, and end session
+    geocodeClarificationPending.delete(customerPhone)
     clearPendingOrder(customerPhone).catch(() => {})
     endSession(customerPhone).catch(() => {})
   } catch (err) {
