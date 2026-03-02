@@ -2,29 +2,44 @@ const path = require('path')
 require('dotenv').config({ path: path.resolve(__dirname, '../.env'), override: true })
 const { createClient } = require('@supabase/supabase-js')
 const axios = require('axios')
+const { randomUUID } = require('crypto')
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_KEY
 )
 
-// Save a message to the conversation history
-async function saveMessage(customerPhone, role, message) {
+// Save a message to the conversation history.
+// sessionId links the message to the current order session — used by getHistory()
+// to scope context to the active session only (prevents old orders bleeding in).
+async function saveMessage(customerPhone, role, message, sessionId = null) {
+  const row = { customer_phone: customerPhone, role, message }
+  if (sessionId) row.session_id = sessionId
+
   const { error } = await supabase
     .from('conversations')
-    .insert({ customer_phone: customerPhone, role, message })
+    .insert(row)
 
   if (error) console.error('Error saving message:', error)
 }
 
-// Get last 20 messages for a customer (newest first, then reversed to chronological order)
-async function getHistory(customerPhone) {
-  const { data, error } = await supabase
+// Get last 20 messages for a customer (newest first, then reversed to chronological order).
+// When sessionId is provided, only messages from that session are returned — this prevents
+// old completed orders from leaking into Claude's context window (Option B session management).
+// Falls back to full history when sessionId is null (graceful degradation).
+async function getHistory(customerPhone, sessionId = null) {
+  let query = supabase
     .from('conversations')
     .select('role, message')
     .eq('customer_phone', customerPhone)
     .order('timestamp', { ascending: false })
     .limit(20)
+
+  if (sessionId) {
+    query = query.eq('session_id', sessionId)
+  }
+
+  const { data, error } = await query
 
   if (error) {
     console.error('Error fetching history:', error)
@@ -605,6 +620,99 @@ async function getBusinessHours() {
   return data
 }
 
+// ─── Order Session Management ─────────────────────────────────────────────────
+// Each customer interaction is grouped into a "session" — a UUID that links all
+// messages from a single order flow.  A session starts when the customer first
+// writes in (or when the previous session expired / ended) and ends when the
+// order is completed (payment confirmed → clearPendingOrder called) or the
+// customer picks up in-person.
+//
+// Sessions expire automatically after SESSION_EXPIRY_MS of inactivity.
+// This means a customer who writes the next day always gets a clean slate.
+//
+// DB columns required (run once in Supabase SQL editor):
+//   ALTER TABLE customers
+//     ADD COLUMN IF NOT EXISTS current_session_id UUID,
+//     ADD COLUMN IF NOT EXISTS session_last_activity_at TIMESTAMPTZ;
+//   ALTER TABLE conversations
+//     ADD COLUMN IF NOT EXISTS session_id UUID;
+//   CREATE INDEX IF NOT EXISTS idx_conversations_session_id ON conversations(session_id);
+
+const SESSION_EXPIRY_MS = 6 * 60 * 60 * 1000 // 6 hours
+
+/**
+ * Return the current active session ID for this customer, creating a new one
+ * if none exists or the previous one has expired (> 6 h of inactivity).
+ * Also refreshes session_last_activity_at so the clock resets on every turn.
+ */
+async function getOrCreateSession(phone) {
+  try {
+    const { data, error } = await supabase
+      .from('customers')
+      .select('current_session_id, session_last_activity_at')
+      .eq('phone', phone)
+      .single()
+
+    if (error || !data) {
+      console.warn(`[session] Could not read session for ${phone}:`, error?.message)
+      return null
+    }
+
+    const now = Date.now()
+    const lastActivity = data.session_last_activity_at
+      ? new Date(data.session_last_activity_at).getTime()
+      : 0
+    const isExpired = (now - lastActivity) >= SESSION_EXPIRY_MS
+
+    if (data.current_session_id && !isExpired) {
+      // Active session — refresh the activity timestamp and return existing ID
+      await supabase
+        .from('customers')
+        .update({ session_last_activity_at: new Date().toISOString() })
+        .eq('phone', phone)
+      return data.current_session_id
+    }
+
+    // No session or it expired — create a fresh one
+    const newSessionId = randomUUID()
+    await supabase
+      .from('customers')
+      .update({
+        current_session_id: newSessionId,
+        session_last_activity_at: new Date().toISOString()
+      })
+      .eq('phone', phone)
+
+    console.log(`[session] New session for ${phone}: ${newSessionId}${data.current_session_id ? ' (previous expired)' : ''}`)
+    return newSessionId
+  } catch (e) {
+    console.error('[session] getOrCreateSession error:', e.message)
+    return null
+  }
+}
+
+/**
+ * End the current session for a customer.
+ * Called when an order completes (Zoho record created + clearPendingOrder) or
+ * the customer chooses in-person pickup (no payment needed).
+ * The next message from this customer will get a brand-new session, giving
+ * Claude a clean history with no remnants from the completed order.
+ */
+async function endSession(phone) {
+  try {
+    await supabase
+      .from('customers')
+      .update({
+        current_session_id: null,
+        session_last_activity_at: null
+      })
+      .eq('phone', phone)
+    console.log(`[session] Session ended for ${phone}`)
+  } catch (e) {
+    console.error('[session] endSession error:', e.message)
+  }
+}
+
 // Check if bot is paused for a customer
 async function isBotPaused(phone) {
   const { data, error } = await supabase
@@ -665,5 +773,7 @@ module.exports = {
   lookupDeliveryCost,
   savePendingOrder,
   getPendingOrder,
-  clearPendingOrder
+  clearPendingOrder,
+  getOrCreateSession,
+  endSession
 }

@@ -1,5 +1,5 @@
 const Anthropic = require('@anthropic-ai/sdk')
-const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getAlmuerzoDeliveryTiers, getDeliveryZoneByAddress, getDeliveryZoneByCoordinates, resolveGoogleMapsUrl, advanceCycleIfNeeded, getWeekAlmuerzos, getPaymentMethods, saveDeliveryAddress, saveDeliveryZoneOnly, saveLocationPin, getCustomerAddress, getBusinessHours, lookupDeliveryCost, savePendingOrder, getPendingOrder, clearPendingOrder } = require('./memory')
+const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getAlmuerzoDeliveryTiers, getDeliveryZoneByAddress, getDeliveryZoneByCoordinates, resolveGoogleMapsUrl, advanceCycleIfNeeded, getWeekAlmuerzos, getPaymentMethods, saveDeliveryAddress, saveDeliveryZoneOnly, saveLocationPin, getCustomerAddress, getBusinessHours, lookupDeliveryCost, savePendingOrder, getPendingOrder, clearPendingOrder, getOrCreateSession, endSession } = require('./memory')
 const { createZohoDeliveryRecord } = require('./zoho')
 const path = require('path')
 require('dotenv').config({ path: path.resolve(__dirname, '../.env'), override: true })
@@ -814,6 +814,16 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     // Save customer to db
     await upsertCustomer(customerPhone, customerName)
 
+    // ── Session management ────────────────────────────────────────────────────
+    // Get or create the current session for this customer.  All saveMessage()
+    // and getHistory() calls below are scoped to this sessionId so Claude only
+    // sees messages from the current order — never from a completed previous order.
+    // Falls back to null on DB error, which gracefully reverts to full history.
+    const sessionId = await getOrCreateSession(customerPhone).catch(e => {
+      console.warn('[session] getOrCreateSession failed (non-blocking):', e.message)
+      return null
+    })
+
     // ── CAMPAIGN OVERRIDE: Fanesca Semana Santa 2026 ───────────────────────────
     // TODO: REMOVE after campaign ends.
     // Catches three entry points from the Meta Ads campaign:
@@ -886,8 +896,8 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         ].join('\n')
       }
 
-      await saveMessage(customerPhone, 'user', customerMessage)
-      await saveMessage(customerPhone, 'assistant', fanescaReply)
+      await saveMessage(customerPhone, 'user', customerMessage, sessionId)
+      await saveMessage(customerPhone, 'assistant', fanescaReply, sessionId)
       return { reply: fanescaReply, needsHandoff: false, needsPaymentHandoff: false }
     }
     // ──────────────────────────────────────────────────────────────────────────
@@ -905,7 +915,7 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       getWeekAlmuerzos(currentCycle),
       getPaymentMethods(),
       getBusinessHours(),
-      getHistory(customerPhone),
+      getHistory(customerPhone, sessionId),   // session-scoped: only current order messages
       getCustomerAddress(customerPhone).catch(() => null)
     ])
 
@@ -1123,8 +1133,10 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     if (isInPersonOrder) {
       console.log('In-person order detected — BYPASSING Claude, closing conversation')
       const inPersonReply = '¡Perfecto! 😊 Te estaremos esperando. El pago se realiza directamente en el local. ¡Hasta pronto! 👋'
-      await saveMessage(customerPhone, 'user', customerMessage)
-      await saveMessage(customerPhone, 'assistant', inPersonReply)
+      await saveMessage(customerPhone, 'user', customerMessage, sessionId)
+      await saveMessage(customerPhone, 'assistant', inPersonReply, sessionId)
+      // Conversation complete — end session so next interaction starts fresh
+      endSession(customerPhone).catch(() => {})
       return {
         reply: inPersonReply,
         needsHandoff: false,
@@ -1158,8 +1170,8 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       const bankInfo = formatPaymentMethods(paymentMethods)
       const paymentReply = `¡Perfecto! Tu pedido está confirmado 🎉\n\nAquí están los datos para tu transferencia:\n\n${bankInfo}\n\n*Monto a transferir: ${totalAmount}*\n\nUna vez realices la transferencia, envíanos la captura del comprobante para procesar tu pedido. ¡Gracias por confiar en nosotros! 💛`
 
-      await saveMessage(customerPhone, 'user', customerMessage)
-      await saveMessage(customerPhone, 'assistant', paymentReply)
+      await saveMessage(customerPhone, 'user', customerMessage, sessionId)
+      await saveMessage(customerPhone, 'assistant', paymentReply, sessionId)
 
       return {
         reply: paymentReply,
@@ -1196,9 +1208,9 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     // it is a machine-readable tag, the customer should never see it.
     const cleanReplyText = replyText.replace(/<ORDEN>[\s\S]*?<\/ORDEN>/g, '').trim()
 
-    // Save both messages only after Claude succeeds
-    await saveMessage(customerPhone, 'user', customerMessage)
-    await saveMessage(customerPhone, 'assistant', cleanReplyText)
+    // Save both messages only after Claude succeeds (session-scoped)
+    await saveMessage(customerPhone, 'user', customerMessage, sessionId)
+    await saveMessage(customerPhone, 'assistant', cleanReplyText, sessionId)
 
     // ── Persist order snapshot from <ORDEN> JSON block ────────────────────────
     // Claude emits a hidden <ORDEN>{...}</ORDEN> block in every order summary.
@@ -1303,7 +1315,9 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         createZohoDeliveryRecord(orderData).catch(err =>
           console.error('Zoho delivery record failed (non-blocking):', err.message)
         )
+        // Order complete — clear snapshot and end session so next message starts fresh
         clearPendingOrder(customerPhone).catch(() => {})
+        endSession(customerPhone).catch(() => {})
       } else {
         console.warn('Zoho: HANDOFF_PAYMENT detected but no order data found — skipping')
       }
@@ -1372,7 +1386,10 @@ async function triggerZohoOnPayment(customerPhone, customerName) {
     createZohoDeliveryRecord(orderData).catch(err =>
       console.error('Zoho delivery record failed (non-blocking):', err.message)
     )
+    // Order complete — clear snapshot and end session so the customer's
+    // next message starts a fresh session with no order history bleed-through.
     clearPendingOrder(customerPhone).catch(() => {})
+    endSession(customerPhone).catch(() => {})
   } catch (err) {
     console.error('Zoho triggerZohoOnPayment error (non-blocking):', err.message)
   }
