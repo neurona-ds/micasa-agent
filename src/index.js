@@ -3,7 +3,7 @@ require('dotenv').config({ path: path.resolve(__dirname, '../.env'), override: t
 const express = require('express')
 const axios = require('axios')
 const { processMessage, triggerZohoOnPayment, hasPendingOrder } = require('./agent')
-const { isBotPaused, pauseBot, resumeBot, getDeliveryZoneByCoordinates, saveDeliveryZoneOnly, saveLocationPin } = require('./memory')
+const { isBotPaused, pauseBot, resumeBot, getDeliveryZoneByCoordinates, saveDeliveryZoneOnly, saveLocationPin, getPendingOrder, lookupDeliveryCost, clearPendingOrder } = require('./memory')
 
 const app = express()
 app.use(express.json())
@@ -299,9 +299,23 @@ app.post('/webhook', async (req, res) => {
             console.warn('[location handler] saveDeliveryZoneOnly failed:', err.message)
           )
 
+          // Bug 4 Part B: Detect delivery cost change when a location pin changes the zone
+          // AFTER an order summary was already shown. If cost differs, tell Claude to show updated summary.
+          let costChangeWarning = ''
+          const existingOrder = await getPendingOrder(customerPhone).catch(() => null)
+          if (existingOrder && existingOrder.deliveryCost !== null && existingOrder.deliveryCost !== undefined) {
+            const newCost = await lookupDeliveryCost(zone, existingOrder.orderType, existingOrder.total, existingOrder.cantidad).catch(() => null)
+            if (newCost !== null && newCost !== existingOrder.deliveryCost) {
+              console.log(`[location handler] Bug 4: delivery cost changed! Old=$${existingOrder.deliveryCost} → New=$${newCost} (zone ${zone})`)
+              costChangeWarning = ` ⚠️ IMPORTANTE: El costo de envío cambió de $${existingOrder.deliveryCost.toFixed(2)} a $${newCost.toFixed(2)} con esta nueva ubicación. DEBES mostrar un resumen ACTUALIZADO con el nuevo costo de envío y total ANTES de pedir confirmación. NO uses el resumen anterior.`
+              // Clear the stale pending_order so a fresh <ORDEN> is generated
+              clearPendingOrder(customerPhone).catch(() => {})
+            }
+          }
+
           // Inject zone for delivery pricing — geocoded address is intentionally
           // omitted from what Claude sees (stored internally for Zoho only via log).
-          locationMessage += `\n\n[SISTEMA: Pin de ubicación recibido | Distancia: ${distanceKm}km → Zona ${zone}. NO mencionar zona al cliente. NO mostrar dirección geocodificada al cliente.]`
+          locationMessage += `\n\n[SISTEMA: Pin de ubicación recibido | Distancia: ${distanceKm}km → Zona ${zone}. NO mencionar zona al cliente. NO mostrar dirección geocodificada al cliente.${costChangeWarning}]`
           console.log(`[location handler] Zone ${zone} (${distanceKm}km) | geocoded="${formattedAddress}" (NOT sent to Claude)`)
         } else {
           console.warn('[location handler] Reverse-geocoding failed — passing pin to Claude without zone')

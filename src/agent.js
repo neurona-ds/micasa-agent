@@ -1,5 +1,5 @@
 const Anthropic = require('@anthropic-ai/sdk')
-const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getAlmuerzoDeliveryTiers, getDeliveryZoneByAddress, getDeliveryZoneByCoordinates, resolveGoogleMapsUrl, advanceCycleIfNeeded, getWeekAlmuerzos, getPaymentMethods, saveDeliveryAddress, saveDeliveryZoneOnly, saveLocationPin, getCustomerAddress, getBusinessHours, lookupDeliveryCost, savePendingOrder, getPendingOrder, clearPendingOrder, getOrCreateSession, endSession } = require('./memory')
+const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getAlmuerzoDeliveryTiers, getDeliveryZoneByAddress, getDeliveryZoneByCoordinates, resolveGoogleMapsUrl, advanceCycleIfNeeded, getWeekAlmuerzos, getPaymentMethods, saveDeliveryAddress, saveRawAddress, saveDeliveryZoneOnly, saveLocationPin, getCustomerAddress, getBusinessHours, lookupDeliveryCost, savePendingOrder, getPendingOrder, clearPendingOrder, getOrCreateSession, endSession } = require('./memory')
 const { createZohoDeliveryRecord } = require('./zoho')
 const path = require('path')
 require('dotenv').config({ path: path.resolve(__dirname, '../.env'), override: true })
@@ -944,6 +944,14 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       lastBotMsg.message.includes('📍')
     )
 
+    // Bug 1 fix: detect when bot asked for CLARIFICATION after a low-confidence geocode.
+    // The low-confidence prompt includes "geocodificarse" or "referencia más específica" + "📍".
+    // When the customer replies with a reference, we need to re-geocode that reference text.
+    const lastBotAskedClarification = lastBotMsg && !lastBotAskedAddress && (
+      (lastBotMsg.message.includes('geocodificarse') || lastBotMsg.message.includes('referencia más específica') || lastBotMsg.message.includes('referencia cercana')) &&
+      lastBotMsg.message.includes('📍')
+    )
+
     // Quick sanity check: is this message plausibly an address?
     // Avoids geocoding short replies, turn-time answers, and conversational sentences.
     const msgTrimmed = customerMessage.trim()
@@ -1007,7 +1015,24 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
           console.warn('saveDeliveryZoneOnly (maps url) failed:', err.message)
         )
         const orderTypeNote = buildOrderTypeNote()
-        enrichedMessage = `${customerMessage}\n\n[SISTEMA: Ubicación Maps URL → coords (${resolvedCoords?.lat ?? '?'},${resolvedCoords?.lng ?? '?'}) | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido escribe la dirección así: "📍 ${urlTrimmed}"]`
+
+        // Bug 4 Part B: Detect delivery cost change when a location pin/Maps URL
+        // changes the zone AFTER an order summary was already shown.
+        // If the new zone's delivery cost differs from what's in pending_order,
+        // tell Claude to show an updated summary before proceeding to payment.
+        let costChangeWarning = ''
+        const existingOrder = await getPendingOrder(customerPhone).catch(() => null)
+        if (existingOrder && existingOrder.deliveryCost !== null && existingOrder.deliveryCost !== undefined) {
+          const newCost = await lookupDeliveryCost(zone, existingOrder.orderType, existingOrder.total, existingOrder.cantidad).catch(() => null)
+          if (newCost !== null && newCost !== existingOrder.deliveryCost) {
+            console.log(`Bug 4: delivery cost changed! Old=$${existingOrder.deliveryCost} → New=$${newCost} (zone ${zone})`)
+            costChangeWarning = ` ⚠️ IMPORTANTE: El costo de envío cambió de $${existingOrder.deliveryCost.toFixed(2)} a $${newCost.toFixed(2)} con esta nueva ubicación. DEBES mostrar un resumen ACTUALIZADO con el nuevo costo de envío y total ANTES de pedir confirmación. NO uses el resumen anterior.`
+            // Clear the stale pending_order so a fresh <ORDEN> is generated
+            clearPendingOrder(customerPhone).catch(() => {})
+          }
+        }
+
+        enrichedMessage = `${customerMessage}\n\n[SISTEMA: Ubicación Maps URL → coords (${resolvedCoords?.lat ?? '?'},${resolvedCoords?.lng ?? '?'}) | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido escribe la dirección así: "📍 ${urlTrimmed}"${costChangeWarning}]`
         console.log(`Maps URL zone injected: Zone ${zone} (${distanceKm}km) via ${resolvedCoords ? 'real coords' : 'geocoding fallback'}`)
       } else {
         console.warn(`Maps URL zone calculation failed — Claude will not have zone info`)
@@ -1029,6 +1054,10 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         if (isLowConfidence) {
           console.warn(`Low-confidence geocode: "${customerMessage}" → "${formattedAddress}" — asking for clarification`)
           enrichedMessage = `${customerMessage}\n\n[SISTEMA: La dirección proporcionada no pudo geocodificarse con precisión (resultado: "${formattedAddress}"). No calcules zona todavía. Pide al cliente una referencia más específica: calle principal, intersección o barrio. Ejemplo: "¿Me podrías dar la calle principal o una referencia cercana, como un parque o edificio conocido? 📍"]`
+          // Save the raw text so pending_order.address is never null even when geocoding fails
+          saveRawAddress(customerPhone, customerMessage.trim()).catch(err =>
+            console.warn('saveRawAddress (low-confidence) failed:', err.message)
+          )
         } else {
           enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección geocodificada → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido escribe la dirección así: "📍 ${formattedAddress}"]`
           console.log(`Zone injected: Zone ${zone} (${distanceKm}km)`)
@@ -1038,6 +1067,59 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         }
       } else {
         console.warn(`Zone calculation failed — Claude will estimate from address text`)
+        // Save the raw text so pending_order.address is never null even when geocoding completely fails
+        saveRawAddress(customerPhone, customerMessage.trim()).catch(err =>
+          console.warn('saveRawAddress (geocode-failure) failed:', err.message)
+        )
+      }
+    } else if (lastBotAskedClarification && msgTrimmed.length >= 10) {
+      // ── Bug 1 fix: Re-geocode reference message after low-confidence clarification ──
+      // Customer gave a reference like "Cercano a Los Pinos y Galo Plaza Lasso" after
+      // the bot asked for a more specific address. Try geocoding this reference text.
+      console.log(`Clarification reference detected — re-geocoding: "${customerMessage}"`)
+      const zoneResult = await getDeliveryZoneByAddress(customerMessage)
+
+      if (zoneResult) {
+        const isStillLowConfidence = ['GEOMETRIC_CENTER', 'APPROXIMATE'].includes(zoneResult.locationType)
+
+        if (!isStillLowConfidence) {
+          // Good geocode — inject zone normally
+          const { zone, distanceKm, formattedAddress } = zoneResult
+          const orderTypeNote = buildOrderTypeNote()
+          enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección geocodificada (referencia) → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido escribe la dirección así: "📍 ${formattedAddress}"]`
+          console.log(`Clarification zone injected: Zone ${zone} (${distanceKm}km)`)
+          saveDeliveryAddress(customerPhone, formattedAddress, zone, distanceKm).catch(err =>
+            console.warn('saveDeliveryAddress (clarification) failed:', err.message)
+          )
+        } else {
+          // Still low confidence — save raw address, tell Claude to NOT include delivery cost
+          console.warn(`Clarification re-geocode still low confidence: "${customerMessage}" → "${zoneResult.formattedAddress}"`)
+          saveRawAddress(customerPhone, customerMessage.trim()).catch(err =>
+            console.warn('saveRawAddress (clarification-low) failed:', err.message)
+          )
+          enrichedMessage = `${customerMessage}\n\n[SISTEMA: ⚠️ ZONA NO CONFIRMADA — La referencia del cliente tampoco pudo geocodificarse con precisión. NUNCA incluyas costo de envío en el resumen. Indica al cliente que un administrador confirmará el costo de envío. Usa HANDOFF para que un humano resuelva la zona y el precio de envío.]`
+        }
+      } else {
+        // Geocoding completely failed — save raw, inject NO-ZONE
+        console.warn(`Clarification geocode failed entirely for: "${customerMessage}"`)
+        saveRawAddress(customerPhone, customerMessage.trim()).catch(err =>
+          console.warn('saveRawAddress (clarification-fail) failed:', err.message)
+        )
+        enrichedMessage = `${customerMessage}\n\n[SISTEMA: ⚠️ ZONA NO CONFIRMADA — No se pudo determinar la ubicación del cliente. NUNCA incluyas costo de envío en el resumen. Indica al cliente que un administrador confirmará el costo de envío. Usa HANDOFF para que un humano resuelva la zona y el precio de envío.]`
+      }
+    }
+
+    // ── Bug 1 safety net: NO-ZONE injection when no enrichment happened ──────
+    // If after all geocoding branches the message was never enriched AND there's
+    // an active delivery context AND no zone in DB → inject explicit warning so
+    // Claude never invents a delivery cost.
+    if (enrichedMessage === customerMessage && !isMapsUrl) {
+      // Check if there's an active delivery order context (pending_order exists or
+      // recent conversation mentions delivery) but no zone in DB
+      const pendingOrder = await getPendingOrder(customerPhone).catch(() => null)
+      if (pendingOrder && !storedGeo?.zone) {
+        enrichedMessage += `\n\n[SISTEMA: ⚠️ ZONA NO CONFIRMADA — Este pedido es a domicilio pero NO hay zona de envío confirmada en el sistema. NUNCA incluyas costo de envío en el resumen del pedido. Si necesitas mostrar un resumen, indica que el costo de envío será confirmado por un administrador.]`
+        console.log('NO-ZONE safety net injected — pending order exists but no zone in DB')
       }
     }
 
@@ -1144,15 +1226,18 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       }
     }
 
-    // Deterministic override: if any recent bot message had "Confirmas tu pedido" and customer says yes → bypass Claude and send payment directly.
+    // Deterministic override: if the LAST bot message had "Confirmas tu pedido" and customer says yes → bypass Claude and send payment directly.
+    // Bug 4 fix: only check the LAST assistant message (not any in the last 8).
+    // Checking a wider window caused false positives: after the customer sent a GPS pin
+    // that changed the zone, an OLD "Confirmas tu pedido" + old "Si" in history tricked
+    // the bot into skipping the updated pricing summary.
     // GUARD: only fire when the restaurant is open. If closed, fall through to Claude so it can
     // redirect to scheduling — the isConfirmation path sends payment info unconditionally, which
     // would let a customer confirm an immediate order even when the restaurant is closed.
     const AFFIRMATIVES = ['si', 'sí', 'confirmo', 'dale', 'ok', 'listo', 'va', 'perfecto', 'claro', 'yes', 'bueno', 'adelante', 'de acuerdo']
-    const recentHistory = [...history].slice(-8) // last 8 messages — wide enough to catch the confirmation prompt
-    const recentAssistantMsgs = recentHistory.filter(h => h.role === 'assistant')
-    // Find the most recent assistant message that asked for confirmation (and contained the order summary)
-    const confirmationMsg = [...recentAssistantMsgs].reverse().find(m => m.message.includes('Confirmas tu pedido'))
+    // Bug 4: only check the LAST assistant message, not a wide window
+    const lastAssistantMsg = [...history].reverse().find(h => h.role === 'assistant')
+    const confirmationMsg = lastAssistantMsg && lastAssistantMsg.message.includes('Confirmas tu pedido') ? lastAssistantMsg : null
     const hadConfirmationPrompt = !!confirmationMsg
     const customerMsgNorm = customerMessage.trim().toLowerCase().replace(/[¡!¿?.,]/g, '').trim()
     const isAffirmative = AFFIRMATIVES.some(a => customerMsgNorm === a || customerMsgNorm.startsWith(a + ' '))
@@ -1269,21 +1354,16 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
 
     // ── Zoho: fire on payment handoff (customer sent comprobante) ──────────────
     if (needsPaymentHandoff && process.env.ZOHO_CLIENT_ID) {
-      // Primary: read pre-saved order snapshot from DB (written when bot sent the summary).
-      // Fallback: history scan (safety net in case DB write failed or bot was redeployed mid-order).
+      // Read pre-saved order snapshot from DB (written when bot sent the summary).
+      // Bug 2+3 fix: NO history-scan fallback. If pending_order is null it means
+      // triggerZohoOnPayment() already processed this order (customer sent image first,
+      // then typed "Transferencia realizada"). Creating a second Zoho record from
+      // history scan produced garbage data (bot sentences as address). Just skip.
       let orderData = await getPendingOrder(customerPhone).catch(() => null)
       if (orderData) {
         console.log('Zoho: using pending_order from DB for', customerPhone, orderData)
       } else {
-        console.warn('Zoho: no pending_order in DB — falling back to history scan for', customerPhone)
-        const allAssistantMsgs = [...history].filter(h => h.role === 'assistant')
-        const orderSummaryMsg  = [...allAssistantMsgs].reverse().find(
-          m => /\bTOTAL[:\s]+\$[\d.]+/i.test(m.message) && /[Ee]nv[ií]o[:\s]+[\$G]/i.test(m.message)
-        )
-        if (orderSummaryMsg) {
-          const geoData = await getCustomerAddress(customerPhone).catch(() => null)
-          orderData = extractOrderDataForZoho(orderSummaryMsg, history, customerPhone, customerName, geoData?.address || null, geoData?.locationPin || null)
-        }
+        console.log('Zoho: no pending_order for', customerPhone, '— order already processed by image handler, skipping Zoho')
       }
 
       // ── Override with authoritative DB values at send time ───────────────────

@@ -447,6 +447,20 @@ async function saveDeliveryAddress(phone, formattedAddress, zone, distanceKm) {
   if (error) console.error('Error saving delivery address:', error)
 }
 
+// Save the raw customer-typed address text, independent of geocoding success.
+// Used when geocoding fails or returns low confidence — we still want to capture
+// the customer's address for Zoho and for Claude's stored-address context.
+// Does NOT overwrite zone or distance — those are set separately by geocoding.
+async function saveRawAddress(phone, rawAddress) {
+  const { error } = await supabase
+    .from('customers')
+    .update({ last_delivery_address: rawAddress })
+    .eq('phone', phone)
+
+  if (error) console.error('[saveRawAddress] Error:', error)
+  else console.log(`[saveRawAddress] Saved for ${phone}: "${rawAddress}"`)
+}
+
 // Save customer location coordinates to the DB.
 // Stores:
 //   last_location_pin  JSONB  → { lat, lng }   — for internal zone calculations
@@ -766,6 +780,7 @@ module.exports = {
   pauseBot,
   resumeBot,
   saveDeliveryAddress,
+  saveRawAddress,
   saveLocationPin,
   saveDeliveryZoneOnly,
   getCustomerAddress,
