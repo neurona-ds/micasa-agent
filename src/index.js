@@ -3,7 +3,7 @@ require('dotenv').config({ path: path.resolve(__dirname, '../.env'), override: t
 const express = require('express')
 const axios = require('axios')
 const { processMessage, triggerZohoOnPayment, closeOrderSession, hasPendingOrder } = require('./agent')
-const { isBotPaused, pauseBot, resumeBot, getDeliveryZoneByCoordinates, saveDeliveryZoneOnly, saveLocationPin, getPendingOrder, lookupDeliveryCost, clearPendingOrder } = require('./memory')
+const { isBotPaused, pauseBot, resumeBot, getDeliveryZoneByCoordinates, saveDeliveryZoneOnly, saveLocationPin, getPendingOrder, savePendingOrder, lookupDeliveryCost, clearPendingOrder, saveMessage, getOrCreateSession } = require('./memory')
 
 const app = express()
 app.use(express.json())
@@ -145,13 +145,66 @@ app.post('/webhook', async (req, res) => {
         // resumeBot above, but we want the operator's message handling to run)
       }
 
-      // If it's the human agent email → pause bot + handle #resume
+      // If it's the human agent email → operator assist + pause/resume logic
       if (humanEmail && operatorEmail === humanEmail) {
         if (rawText === '#resume') {
           await resumeBot(customerPhone)
           console.log(`Bot RESUMED for ${customerPhone} by human agent`)
           return res.status(200).json({ status: 'bot_resumed' })
         }
+
+        // ── OPERATOR ASSIST ─────────────────────────────────────────────────────
+        // When the operator writes to the customer (not a confirmation message),
+        // save their message as [OPERADOR]: in history (role='assistant' so Claude
+        // treats it as authoritative ground truth). Then extract any delivery cost
+        // or zone the operator provided and update DB fields so the bot has
+        // consistent state. If structured data was found, auto-resume the bot so
+        // it can continue the order flow without further human intervention.
+        if (fullText && !fullText.toLowerCase().includes('orden confirmada')) {
+          // Save operator message to conversation history
+          const sid = await getOrCreateSession(customerPhone).catch(() => null)
+          await saveMessage(customerPhone, 'assistant', `[OPERADOR]: ${fullText}`, sid)
+            .catch(e => console.warn('[operator-assist] saveMessage failed:', e.message))
+          console.log(`[operator-assist] Saved operator message for ${customerPhone}: "${fullText.substring(0, 80)}"`)
+
+          // Extract delivery cost — e.g. "$3.00", "$ 2.50", "$2,50"
+          const costMatch = fullText.match(/\$\s*(\d+(?:[.,]\d{1,2})?)/i)
+          const extractedCost = costMatch ? parseFloat(costMatch[1].replace(',', '.')) : null
+
+          // Extract delivery zone — e.g. "zona 3", "Zona2", "zona 1"
+          const zoneMatch = fullText.match(/\bzona\s*(\d)\b/i)
+          const extractedZone = zoneMatch ? parseInt(zoneMatch[1]) : null
+
+          let dataExtracted = false
+
+          if (extractedCost !== null) {
+            // Merge deliveryCost into existing pending_order (don't overwrite other fields)
+            const existingOrder = await getPendingOrder(customerPhone).catch(() => null)
+            if (existingOrder) {
+              await savePendingOrder(customerPhone, { ...existingOrder, deliveryCost: extractedCost })
+                .catch(e => console.warn('[operator-assist] savePendingOrder failed:', e.message))
+              console.log(`[operator-assist] Updated pending_order.deliveryCost → $${extractedCost}`)
+            }
+            dataExtracted = true
+          }
+
+          if (extractedZone !== null) {
+            // Save zone without overwriting the address or distance (null dist is acceptable)
+            await saveDeliveryZoneOnly(customerPhone, extractedZone, null)
+              .catch(e => console.warn('[operator-assist] saveDeliveryZoneOnly failed:', e.message))
+            console.log(`[operator-assist] Saved zone → ${extractedZone} for ${customerPhone}`)
+            dataExtracted = true
+          }
+
+          // Auto-resume bot when operator provided structured delivery data
+          if (dataExtracted) {
+            await resumeBot(customerPhone)
+            console.log(`[operator-assist] Bot AUTO-RESUMED — operator provided delivery data for ${customerPhone}`)
+            return res.status(200).json({ status: 'operator_data_extracted_bot_resumed' })
+          }
+        }
+        // ────────────────────────────────────────────────────────────────────────
+
         // Only pause if this is NOT the confirmation message (we just resumed above)
         if (!fullText.toLowerCase().includes('orden confirmada')) {
           await pauseBot(customerPhone)
@@ -196,6 +249,16 @@ app.post('/webhook', async (req, res) => {
         console.log(`Bot RESUMED for ${customerPhone} by #resume command`)
         return res.status(200).json({ status: 'bot_resumed' })
       }
+      // Save customer text messages to history while assigned to human agent,
+      // so Claude has full context when the bot eventually resumes.
+      const incomingType = (body.type || 'text').toLowerCase()
+      const incomingText = typeof body.text === 'string' ? body.text : null
+      if (incomingText && incomingType === 'text') {
+        const sid = await getOrCreateSession(customerPhone).catch(() => null)
+        await saveMessage(customerPhone, 'user', incomingText, sid)
+          .catch(e => console.warn('[operator-assist] saveMessage (customer) failed:', e.message))
+        console.log(`[operator-assist] Saved customer message to history (assigned to human)`)
+      }
       // Otherwise block bot and let human handle it
       await pauseBot(customerPhone)
       console.log(`Auto-paused: assigned to human agent (${assigneeEmail})`)
@@ -206,6 +269,16 @@ app.post('/webhook', async (req, res) => {
     if (!justResumed) {
       const paused = await isBotPaused(customerPhone)
       if (paused) {
+        // Save customer text messages to history while bot is paused,
+        // so Claude has full context when the bot eventually resumes.
+        const incomingType = (body.type || 'text').toLowerCase()
+        const incomingText = typeof body.text === 'string' ? body.text : null
+        if (incomingText && incomingType === 'text') {
+          const sid = await getOrCreateSession(customerPhone).catch(() => null)
+          await saveMessage(customerPhone, 'user', incomingText, sid)
+            .catch(e => console.warn('[operator-assist] saveMessage (paused) failed:', e.message))
+          console.log(`[operator-assist] Saved customer message to history (bot paused)`)
+        }
         console.log(`Bot is paused for ${customerPhone} — human handling this chat`)
         return res.status(200).json({ status: 'bot_paused_skipped' })
       }
