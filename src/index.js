@@ -2,7 +2,7 @@ const path = require('path')
 require('dotenv').config({ path: path.resolve(__dirname, '../.env'), override: true })
 const express = require('express')
 const axios = require('axios')
-const { processMessage, triggerZohoOnPayment, hasPendingOrder } = require('./agent')
+const { processMessage, triggerZohoOnPayment, closeOrderSession, hasPendingOrder } = require('./agent')
 const { isBotPaused, pauseBot, resumeBot, getDeliveryZoneByCoordinates, saveDeliveryZoneOnly, saveLocationPin, getPendingOrder, lookupDeliveryCost, clearPendingOrder } = require('./memory')
 
 const app = express()
@@ -126,6 +126,24 @@ app.post('/webhook', async (req, res) => {
       const operatorEmail = (body.operatorEmail || '').toLowerCase()
       const botEmail = (process.env.WATI_BOT_EMAIL || '').toLowerCase()
       const humanEmail = (process.env.WATI_HUMAN_EMAIL || '').toLowerCase()
+      const fullText = typeof body.text === 'string' ? body.text : ''
+
+      // ── ORDER CONFIRMATION DETECTION ─────────────────────────────────────────
+      // When the operator sends "📦 Orden Confirmada" (or any message containing
+      // "Orden Confirmada") to the customer, it signals the payment has been
+      // verified and the order is being dispatched. This is the authoritative
+      // signal to close the order session — not the payment screenshot (too early).
+      //
+      // On confirmation we:
+      //  1. Close the session (endSession + clear geocodeClarificationPending)
+      //  2. Resume the bot so the customer's NEXT message starts a fresh session
+      if (fullText.toLowerCase().includes('orden confirmada')) {
+        await closeOrderSession(customerPhone)
+        await resumeBot(customerPhone)
+        console.log(`[order-confirmed] Session closed + bot resumed for ${customerPhone}`)
+        // Fall through — also apply human-agent logic (pause will be overridden by
+        // resumeBot above, but we want the operator's message handling to run)
+      }
 
       // If it's the human agent email → pause bot + handle #resume
       if (humanEmail && operatorEmail === humanEmail) {
@@ -134,8 +152,11 @@ app.post('/webhook', async (req, res) => {
           console.log(`Bot RESUMED for ${customerPhone} by human agent`)
           return res.status(200).json({ status: 'bot_resumed' })
         }
-        await pauseBot(customerPhone)
-        console.log(`Bot AUTO-PAUSED for ${customerPhone} — human agent took over`)
+        // Only pause if this is NOT the confirmation message (we just resumed above)
+        if (!fullText.toLowerCase().includes('orden confirmada')) {
+          await pauseBot(customerPhone)
+          console.log(`Bot AUTO-PAUSED for ${customerPhone} — human agent took over`)
+        }
         return res.status(200).json({ status: 'operator_takeover' })
       }
 

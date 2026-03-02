@@ -1405,10 +1405,11 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         createZohoDeliveryRecord(orderData).catch(err =>
           console.error('Zoho delivery record failed (non-blocking):', err.message)
         )
-        // Order complete — clear snapshot, clarification flag, and end session
+        // Clear the order snapshot so follow-up images don't re-trigger Zoho.
+        // Session stays open — it will be closed by closeOrderSession() when the
+        // operator sends "📦 Orden Confirmada" to the customer.
         geocodeClarificationPending.delete(customerPhone)
         clearPendingOrder(customerPhone).catch(() => {})
-        endSession(customerPhone).catch(() => {})
       } else {
         console.warn('Zoho: HANDOFF_PAYMENT detected but no order data found — skipping')
       }
@@ -1477,13 +1478,28 @@ async function triggerZohoOnPayment(customerPhone, customerName) {
     createZohoDeliveryRecord(orderData).catch(err =>
       console.error('Zoho delivery record failed (non-blocking):', err.message)
     )
-    // Order complete — clear snapshot, clarification flag, and end session
+    // Clear the order snapshot so follow-up images don't re-trigger Zoho.
+    // Session stays open — it will be closed by closeOrderSession() when the
+    // operator sends "📦 Orden Confirmada" to the customer.
     geocodeClarificationPending.delete(customerPhone)
     clearPendingOrder(customerPhone).catch(() => {})
-    endSession(customerPhone).catch(() => {})
   } catch (err) {
     console.error('Zoho triggerZohoOnPayment error (non-blocking):', err.message)
   }
 }
 
-module.exports = { processMessage, triggerZohoOnPayment, hasPendingOrder: (phone) => getPendingOrder(phone).then(Boolean).catch(() => false) }
+/**
+ * Close the active order session for a customer.
+ * Called from index.js when the operator sends "📦 Orden Confirmada" to the customer.
+ * This is the ONLY place endSession() should be called for delivery orders —
+ * not on image receipt, not on HANDOFF_PAYMENT text — only on operator confirmation.
+ * Also clears the geocodeClarificationPending flag and resumes the bot so the
+ * customer's next message starts a fresh session with an active bot.
+ */
+async function closeOrderSession(phone) {
+  geocodeClarificationPending.delete(phone)
+  await endSession(phone).catch(e => console.error('[closeOrderSession] endSession error:', e.message))
+  console.log(`[closeOrderSession] Session closed for ${phone}`)
+}
+
+module.exports = { processMessage, triggerZohoOnPayment, closeOrderSession, hasPendingOrder: (phone) => getPendingOrder(phone).then(Boolean).catch(() => false) }
