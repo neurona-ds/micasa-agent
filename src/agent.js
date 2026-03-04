@@ -1,5 +1,5 @@
 const Anthropic = require('@anthropic-ai/sdk')
-const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getAlmuerzoDeliveryTiers, getDeliveryZoneByAddress, getDeliveryZoneByCoordinates, resolveGoogleMapsUrl, advanceCycleIfNeeded, getWeekAlmuerzos, getPaymentMethods, saveDeliveryAddress, saveRawAddress, saveDeliveryZoneOnly, saveLocationPin, getCustomerAddress, getBusinessHours, lookupDeliveryCost, savePendingOrder, getPendingOrder, clearPendingOrder, getOrCreateSession, endSession } = require('./memory')
+const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getAlmuerzoDeliveryTiers, getDeliveryZoneByAddress, getDeliveryZoneByCoordinates, resolveGoogleMapsUrl, getCurrentCycle, getWeekAlmuerzos, getPaymentMethods, saveDeliveryAddress, saveRawAddress, saveDeliveryZoneOnly, saveLocationPin, getCustomerAddress, getBusinessHours, lookupDeliveryCost, savePendingOrder, getPendingOrder, clearPendingOrder, getOrCreateSession, endSession } = require('./memory')
 const { createZohoDeliveryRecord } = require('./zoho')
 const path = require('path')
 require('dotenv').config({ path: path.resolve(__dirname, '../.env'), override: true })
@@ -918,8 +918,8 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     }
     // ──────────────────────────────────────────────────────────────────────────
 
-    // Auto-advance cycle if a new week has started
-    const currentCycle = await advanceCycleIfNeeded()
+    // Read current cycle from DB — cycle is set manually in Supabase config table
+    const currentCycle = await getCurrentCycle()
 
     // Fetch all data in parallel (history fetched BEFORE saving new message)
     const [config, products, deliveryZones, deliveryTiers, almuerzoDeliveryTiers, weekAlmuerzos, paymentMethods, businessHours, history, storedGeo] = await Promise.all([

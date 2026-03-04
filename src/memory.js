@@ -157,48 +157,23 @@ async function getDeliveryTiers() {
   return data
 }
 
-// Auto-advance cycle every Monday, updates config if a new week has started
-async function advanceCycleIfNeeded() {
+// Read the current cycle from DB — no auto-advance.
+// Change the cycle manually in Supabase: config table, key='current_cycle'.
+async function getCurrentCycle() {
   try {
     const { data, error } = await supabase
       .from('config')
-      .select('key, value')
-      .in('key', ['current_cycle', 'cycle_last_updated', 'almuerzo_cycle_count'])
+      .select('value')
+      .eq('key', 'current_cycle')
+      .single()
 
     if (error) throw error
-
-    const cfg = data.reduce((acc, row) => { acc[row.key] = row.value; return acc }, {})
-
-    const cycleCount = parseInt(cfg.almuerzo_cycle_count || '5')
-    const currentCycle = parseInt(cfg.current_cycle || '1')
-    const lastUpdated = cfg.cycle_last_updated ? new Date(cfg.cycle_last_updated) : null
-
-    // Calculate most recent Monday
-    const now = new Date()
-    const dayOfWeek = now.getDay() // 0=Sun, 1=Mon...
-    const daysSinceMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1
-    const thisMonday = new Date(now)
-    thisMonday.setDate(now.getDate() - daysSinceMonday)
-    thisMonday.setHours(0, 0, 0, 0)
-
-    // If last update was before this Monday, advance the cycle
-    if (!lastUpdated || lastUpdated < thisMonday) {
-      const newCycle = (currentCycle % cycleCount) + 1
-      const newDate = thisMonday.toISOString().split('T')[0]
-
-      await supabase.from('config').upsert([
-        { key: 'current_cycle', value: String(newCycle) },
-        { key: 'cycle_last_updated', value: newDate }
-      ], { onConflict: 'key' })
-
-      console.log(`Cycle auto-advanced: C${currentCycle} → C${newCycle} (week of ${newDate})`)
-      return newCycle
-    }
-
-    return currentCycle
+    const cycle = parseInt(data?.value || '1')
+    console.log(`[cycle] Current cycle: C${cycle}`)
+    return cycle
   } catch (e) {
-    console.error('Error advancing cycle:', e.message)
-    return null
+    console.error('[cycle] Error reading current_cycle:', e.message)
+    return 1
   }
 }
 
@@ -773,7 +748,7 @@ module.exports = {
   getDeliveryZoneByAddress,
   resolveGoogleMapsUrl,
   getDeliveryZoneByCoordinates,
-  advanceCycleIfNeeded,
+  getCurrentCycle,
   getWeekAlmuerzos,
   getPaymentMethods,
   isBotPaused,
