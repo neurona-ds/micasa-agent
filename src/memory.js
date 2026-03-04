@@ -157,22 +157,53 @@ async function getDeliveryTiers() {
   return data
 }
 
-// Read the current cycle from DB — no auto-advance.
-// Change the cycle manually in Supabase: config table, key='current_cycle'.
+// Auto-advance cycle every Monday. Cycle + last-updated date live in the DB
+// (config table) so this survives deploys — nothing is in memory.
+//
+// ⚠️  To manually correct the cycle, update BOTH rows in the config table:
+//   key='current_cycle'    → value='N'
+//   key='cycle_last_updated' → value='YYYY-MM-DD' (the Monday of the current week)
+// Updating only one of them will cause the next auto-advance to compute wrong.
 async function getCurrentCycle() {
   try {
     const { data, error } = await supabase
       .from('config')
-      .select('value')
-      .eq('key', 'current_cycle')
-      .single()
+      .select('key, value')
+      .in('key', ['current_cycle', 'cycle_last_updated', 'almuerzo_cycle_count'])
 
     if (error) throw error
-    const cycle = parseInt(data?.value || '1')
-    console.log(`[cycle] Current cycle: C${cycle}`)
-    return cycle
+
+    const cfg = data.reduce((acc, row) => { acc[row.key] = row.value; return acc }, {})
+
+    const cycleCount  = parseInt(cfg.almuerzo_cycle_count || '5')
+    const currentCycle = parseInt(cfg.current_cycle || '1')
+    const lastUpdated  = cfg.cycle_last_updated ? new Date(cfg.cycle_last_updated) : null
+
+    // Most recent Monday in Ecuador time (UTC-5, no DST)
+    const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Guayaquil' }))
+    const daysSinceMonday = now.getDay() === 0 ? 6 : now.getDay() - 1
+    const thisMonday = new Date(now)
+    thisMonday.setDate(now.getDate() - daysSinceMonday)
+    thisMonday.setHours(0, 0, 0, 0)
+
+    // Only advance if cycle_last_updated is before this Monday (fires once per week)
+    if (!lastUpdated || lastUpdated < thisMonday) {
+      const newCycle = (currentCycle % cycleCount) + 1
+      const newDate  = thisMonday.toISOString().split('T')[0]
+
+      await supabase.from('config').upsert([
+        { key: 'current_cycle',      value: String(newCycle) },
+        { key: 'cycle_last_updated', value: newDate }
+      ], { onConflict: 'key' })
+
+      console.log(`[cycle] AUTO-ADVANCED: C${currentCycle} → C${newCycle} (week of ${newDate})`)
+      return newCycle
+    }
+
+    console.log(`[cycle] Current cycle: C${currentCycle}`)
+    return currentCycle
   } catch (e) {
-    console.error('[cycle] Error reading current_cycle:', e.message)
+    console.error('[cycle] Error in getCurrentCycle:', e.message)
     return 1
   }
 }
