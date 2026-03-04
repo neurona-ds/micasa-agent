@@ -246,7 +246,10 @@ async function createZohoDeliveryRecord(orderData) {
     ...(orderData.cantidad != null && { Cantidad: orderData.cantidad }),
 
     // Pre-computed delivery date — frozen at order time, not at payment time
-    Fecha_de_Envio:     deliveryDate
+    Fecha_de_Envio:     deliveryDate,
+
+    // Meta ad campaign attribution — only set when customer arrived via a tracked ad
+    ...(orderData.campana && { Campana_Meta: orderData.campana })
   }
 
   // ── Step 3: POST the record ───────────────────────────────────────────────

@@ -602,7 +602,7 @@ async function clearPendingOrder(phone) {
 async function getCustomerAddress(phone) {
   const { data, error } = await supabase
     .from('customers')
-    .select('name, last_delivery_address, last_delivery_zone, last_delivery_distance_km, last_location_pin, last_location_url')
+    .select('name, last_delivery_address, last_delivery_zone, last_delivery_distance_km, last_location_pin, last_location_url, campana_meta')
     .eq('phone', phone)
     .single()
 
@@ -619,8 +619,21 @@ async function getCustomerAddress(phone) {
     zone:          data.last_delivery_zone         || null,
     distanceKm:    data.last_delivery_distance_km  || null,
     locationPin:   data.last_location_pin          || null,   // { lat, lng }
-    locationUrl:   data.last_location_url          || null    // clean Maps URL for Zoho
+    locationUrl:   data.last_location_url          || null,   // clean Maps URL for Zoho
+    campana:       data.campana_meta               || null    // Meta ad campaign source
   }
+}
+
+// Save the Meta campaign attribution for a customer.
+// Called when a campaign code (e.g. /la) is detected in the customer's first message.
+async function saveCampanaMeta(phone, campana) {
+  const { error } = await supabase
+    .from('customers')
+    .update({ campana_meta: campana })
+    .eq('phone', phone)
+
+  if (error) console.error('[campana] Error saving campana_meta:', error)
+  else console.log(`[campana] Saved campana_meta="${campana}" for ${phone}`)
 }
 
 // Get weekly business hours — returns array of { day_of_week, open_time, close_time }
@@ -790,6 +803,7 @@ module.exports = {
   saveLocationPin,
   saveDeliveryZoneOnly,
   getCustomerAddress,
+  saveCampanaMeta,
   getBusinessHours,
   lookupDeliveryCost,
   savePendingOrder,

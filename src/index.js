@@ -3,7 +3,16 @@ require('dotenv').config({ path: path.resolve(__dirname, '../.env'), override: t
 const express = require('express')
 const axios = require('axios')
 const { processMessage, triggerZohoOnPayment, closeOrderSession, hasPendingOrder } = require('./agent')
-const { isBotPaused, pauseBot, resumeBot, getDeliveryZoneByCoordinates, saveDeliveryZoneOnly, saveLocationPin, getPendingOrder, savePendingOrder, lookupDeliveryCost, clearPendingOrder, saveMessage, getOrCreateSession } = require('./memory')
+const { isBotPaused, pauseBot, resumeBot, getDeliveryZoneByCoordinates, saveDeliveryZoneOnly, saveLocationPin, getPendingOrder, savePendingOrder, lookupDeliveryCost, clearPendingOrder, saveMessage, getOrCreateSession, saveCampanaMeta } = require('./memory')
+
+// Meta ad campaign codes embedded at the end of the ad's pre-filled message.
+// Detected on the customer's first message → saved to customers.campana_meta → passed to Zoho.
+const CAMPAIGN_MAP = {
+  '/ci':  'Cold Interest',
+  '/wrq': 'Warm Retargeting Web',
+  '/la':  'Lookalike 1% - 2%',
+  '/wri': 'Warm Retargeting Instagram'
+}
 
 const app = express()
 app.use(express.json())
@@ -431,7 +440,7 @@ app.post('/webhook', async (req, res) => {
     // ──────────────────────────────────────────────────────────────────────────
 
     // Regular text message — WATI sends text as plain string
-    const customerMessage =
+    let customerMessage =
       (typeof body.text === 'string' ? body.text : null) ||  // WATI real format
       body.text?.body ||                                       // alternative format
       body.body ||                                             // old format
@@ -441,6 +450,24 @@ app.post('/webhook', async (req, res) => {
       console.log('No message text found — ignoring. Payload:', JSON.stringify(body))
       return res.status(200).json({ status: 'ignored' })
     }
+
+    // ── META CAMPAIGN CODE DETECTION ─────────────────────────────────────────
+    // Meta ads append a short code at the end of the pre-filled message (e.g. "/la").
+    // Detect it on any message, save to DB for Zoho attribution, strip before Claude.
+    const campaignMatch = customerMessage.match(/\s*(\/(?:ci|wrq|la|wri))\s*$/i)
+    if (campaignMatch) {
+      const code = campaignMatch[1].toLowerCase()
+      const campana = CAMPAIGN_MAP[code]
+      if (campana) {
+        saveCampanaMeta(customerPhone, campana).catch(e =>
+          console.warn('[campana] saveCampanaMeta failed:', e.message)
+        )
+        console.log(`[campana] Code "${code}" → "${campana}" saved for ${customerPhone}`)
+        customerMessage = customerMessage.slice(0, campaignMatch.index).trim()
+        if (!customerMessage) customerMessage = 'Hola'  // fallback if message was ONLY the code
+      }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     // Mark as processing — block any concurrent webhook for this phone.
     // lastProcessed is stamped AFTER the reply is sent (see below) so the

@@ -1398,6 +1398,7 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
           if (freshGeo.locationPin)  orderData.locationPin  = freshGeo.locationPin  // { lat, lng }
           if (freshGeo.locationUrl)  orderData.locationUrl  = freshGeo.locationUrl  // clean Maps URL → Zoho Ubicacion
           if (freshGeo.customerName) orderData.customerName = freshGeo.customerName
+          if (freshGeo.campana)      orderData.campana      = freshGeo.campana      // Meta ad campaign
           if (freshGeo.zone) {
             const authCost = await lookupDeliveryCost(freshGeo.zone, orderData.orderType, orderData.total, orderData.cantidad).catch(() => null)
             if (authCost !== null) {
@@ -1475,6 +1476,7 @@ async function triggerZohoOnPayment(customerPhone, customerName) {
       if (freshGeo.locationPin)  orderData.locationPin  = freshGeo.locationPin
       if (freshGeo.locationUrl)  orderData.locationUrl  = freshGeo.locationUrl
       if (freshGeo.customerName) orderData.customerName = freshGeo.customerName
+      if (freshGeo.campana)      orderData.campana      = freshGeo.campana      // Meta ad campaign
       if (freshGeo.zone) {
         const authCost = await lookupDeliveryCost(freshGeo.zone, orderData.orderType, orderData.total, orderData.cantidad).catch(() => null)
         if (authCost !== null) {
