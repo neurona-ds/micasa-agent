@@ -999,6 +999,14 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
 
     let enrichedMessage = customerMessage
 
+    // Proactive address detection: detect Spanish address keywords in the message even
+    // when the bot didn't explicitly ask for the address (e.g., customer includes address
+    // in their first message: "quiero fanescas a la dirección Jorge Juan y Mariana de Jesús").
+    // Only evaluated when none of the primary geocoding triggers are active, to avoid overhead.
+    const proactiveAddressMatch = (!isMapsUrl && !lastBotAskedAddress && !lastBotAskedClarification)
+      ? customerMessage.match(/(?:a (?:la |mi )?direcci[oó]n|mi direcci[oó]n es|direcci[oó]n:)\s+(.+?)(?=,\s*(?:por favor|podr[ií]|si puede|necesit|gracias)|$)/i)
+      : null
+
     if (isMapsUrl) {
       // ── Maps URL: resolve redirect → extract real coords → accurate zone ──
       // Runs regardless of conversation state — zone is always needed for pricing.
@@ -1125,6 +1133,40 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
           console.warn('saveRawAddress (clarification-fail) failed:', err.message)
         )
         enrichedMessage = `${customerMessage}\n\n[SISTEMA: ⚠️ ZONA NO CONFIRMADA — No se pudo determinar la ubicación del cliente. NUNCA incluyas costo de envío en el resumen. Indica al cliente que un administrador confirmará el costo de envío. Usa HANDOFF para que un humano resuelva la zona y el precio de envío.]`
+      }
+    } else if (proactiveAddressMatch) {
+      // ── Proactive geocoding: address keyword detected in unprompted message ──────────
+      // Customer included their address before bot asked (e.g., "quiero fanescas a la
+      // dirección Jorge Juan y Mariana de Jesús"). Geocode it now so zone is available
+      // for pricing without an extra round-trip.
+      const extractedAddress = proactiveAddressMatch[1].trim()
+      console.log(`[proactive-geocode] Address keyword detected — geocoding: "${extractedAddress}"`)
+      const zoneResult = await getDeliveryZoneByAddress(extractedAddress)
+
+      if (zoneResult) {
+        const isLowConfidence = ['GEOMETRIC_CENTER', 'APPROXIMATE'].includes(zoneResult.locationType)
+
+        if (!isLowConfidence) {
+          const { zone, distanceKm, formattedAddress } = zoneResult
+          const orderTypeNote = buildOrderTypeNote()
+          enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección detectada en el mensaje → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido escribe la dirección así: "📍 ${formattedAddress}"]`
+          console.log(`[proactive-geocode] Zone injected: Zone ${zone} (${distanceKm}km)`)
+          saveDeliveryAddress(customerPhone, formattedAddress, zone, distanceKm).catch(err =>
+            console.warn('saveDeliveryAddress (proactive) failed:', err.message)
+          )
+        } else {
+          // Low confidence — save raw address and continue without zone injection
+          console.warn(`[proactive-geocode] Low confidence: "${extractedAddress}" → "${zoneResult.formattedAddress}" — saving raw address`)
+          saveRawAddress(customerPhone, extractedAddress).catch(err =>
+            console.warn('saveRawAddress (proactive-low) failed:', err.message)
+          )
+        }
+      } else {
+        // Geocoding failed — save raw address so it's not lost
+        console.warn(`[proactive-geocode] Geocoding failed for: "${extractedAddress}" — saving raw address`)
+        saveRawAddress(customerPhone, extractedAddress).catch(err =>
+          console.warn('saveRawAddress (proactive-fail) failed:', err.message)
+        )
       }
     }
 
