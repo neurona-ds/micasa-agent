@@ -912,6 +912,27 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         ].join('\n')
       }
 
+      // Proactive geocoding within campaign fast-path:
+      // If customer included their address in this message, geocode it now so the
+      // NEXT turn (when they say "domicilio" / give turno) already has zone info.
+      const _proactiveMatch = (_isAdCopyPaste || _isDeliveryQuestion)
+        ? _fanMsg.match(/(?:a (?:la |mi )?direcci[oó]n|mi direcci[oó]n es|direcci[oó]n:)\s+(.+?)(?=,\s*(?:por favor|podr[ií]|si puede|necesit|gracias)|$)/i)
+        : null
+      if (_proactiveMatch) {
+        const _extractedAddr = _proactiveMatch[1].trim()
+        console.log(`[proactive-geocode] Address keyword detected — geocoding: "${_extractedAddr}"`)
+        const _zoneResult = await getDeliveryZoneByAddress(_extractedAddr)
+        if (_zoneResult && !['GEOMETRIC_CENTER', 'APPROXIMATE'].includes(_zoneResult.locationType)) {
+          console.log(`[proactive-geocode] Zone injected: Zone ${_zoneResult.zone} (${_zoneResult.distanceKm}km)`)
+          await saveDeliveryAddress(customerPhone, _zoneResult.formattedAddress, _zoneResult.zone, _zoneResult.distanceKm)
+            .catch(e => console.warn('saveDeliveryAddress (fanesca fast-path) failed:', e.message))
+        } else {
+          console.warn(`[proactive-geocode] Low confidence or failed for: "${_extractedAddr}" — saving raw address`)
+          await saveRawAddress(customerPhone, _extractedAddr)
+            .catch(e => console.warn('saveRawAddress (fanesca fast-path) failed:', e.message))
+        }
+      }
+
       await saveMessage(customerPhone, 'user', customerMessage, sessionId)
       await saveMessage(customerPhone, 'assistant', fanescaReply, sessionId)
       return { reply: fanescaReply, needsHandoff: false, needsPaymentHandoff: false }
