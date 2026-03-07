@@ -3,7 +3,7 @@ require('dotenv').config({ path: path.resolve(__dirname, '../.env'), override: t
 const express = require('express')
 const axios = require('axios')
 const { processMessage, triggerZohoOnPayment, closeOrderSession, hasPendingOrder } = require('./agent')
-const { isBotPaused, pauseBot, resumeBot, getDeliveryZoneByCoordinates, saveDeliveryZoneOnly, saveLocationPin, getPendingOrder, savePendingOrder, lookupDeliveryCost, clearPendingOrder, saveMessage, getOrCreateSession, saveCampanaMeta } = require('./memory')
+const { isBotPaused, pauseBot, resumeBot, getDeliveryZoneByCoordinates, saveDeliveryZoneOnly, saveDeliveryAddress, saveLocationPin, getPendingOrder, savePendingOrder, lookupDeliveryCost, clearPendingOrder, saveMessage, getOrCreateSession, saveCampanaMeta } = require('./memory')
 
 // Meta ad campaign codes embedded at the end of the ad's pre-filled message.
 // Detected on the customer's first message → saved to customers.campana_meta → passed to Zoho.
@@ -395,9 +395,8 @@ app.post('/webhook', async (req, res) => {
         if (zoneResult) {
           const { zone, distanceKm, formattedAddress } = zoneResult
 
-          // Save zone + distance only — NOT the geocoded address string.
-          // last_delivery_address stays untouched so Claude never offers
-          // a geocoded string as the customer's "previous address".
+          // Save zone + distance only — the customer's typed text address is the
+          // human reference for Zoho. Pin is used for delivery zone calculation only.
           saveDeliveryZoneOnly(customerPhone, zone, distanceKm).catch(err =>
             console.warn('[location handler] saveDeliveryZoneOnly failed:', err.message)
           )

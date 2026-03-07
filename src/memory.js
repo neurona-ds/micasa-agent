@@ -338,6 +338,26 @@ async function resolveGoogleMapsUrl(url) {
     // before following the redirect — they can alter the redirect destination
     // and prevent coordinate extraction from the final URL.
     const cleanUrl = url.replace(/[?&]g_st=[^&]*/g, '').replace(/[?&]$/, '')
+
+    // Try extracting coords directly from the URL first — handles full URLs like
+    // /maps/search/-0.135,-78.466 or /maps?q=-0.135,-78.466 that return HTTP 200
+    // (no redirect) but already contain the coordinates in the path/query.
+    const directPatterns = [
+      /\/maps\/search\/(-?\d+\.?\d*),\+?(-?\d+\.?\d*)/,
+      /\/@(-?\d+\.?\d*),(-?\d+\.?\d*)/,
+      /[?&]q=(-?\d+\.?\d*),\+?(-?\d+\.?\d*)/,
+      /[?&]ll=(-?\d+\.?\d*),\+?(-?\d+\.?\d*)/
+    ]
+    for (const pattern of directPatterns) {
+      const match = cleanUrl.match(pattern)
+      if (match) {
+        const lat = parseFloat(match[1])
+        const lng = parseFloat(match[2])
+        console.log(`[resolveGoogleMapsUrl] Coords extracted directly from URL: lat=${lat}, lng=${lng}`)
+        return { lat, lng }
+      }
+    }
+
     const response = await axios.get(cleanUrl, {
       maxRedirects: 0,
       validateStatus: status => status >= 300 && status < 400,

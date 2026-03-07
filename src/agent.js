@@ -931,7 +931,7 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         const _zoneResult = await getDeliveryZoneByAddress(_extractedAddr)
         if (_zoneResult && !['GEOMETRIC_CENTER', 'APPROXIMATE'].includes(_zoneResult.locationType)) {
           console.log(`[proactive-geocode] Zone injected: Zone ${_zoneResult.zone} (${_zoneResult.distanceKm}km)`)
-          await saveDeliveryAddress(customerPhone, _zoneResult.formattedAddress, _zoneResult.zone, _zoneResult.distanceKm)
+          await saveDeliveryAddress(customerPhone, _extractedAddr, _zoneResult.zone, _zoneResult.distanceKm)
             .catch(e => console.warn('saveDeliveryAddress (fanesca fast-path) failed:', e.message))
         } else {
           console.warn(`[proactive-geocode] Low confidence or failed for: "${_extractedAddr}" — saving raw address`)
@@ -1010,7 +1010,7 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     const msgTrimmed = customerMessage.trim()
     const looksLikeAddress = (
       msgTrimmed.length >= 15 &&
-      msgTrimmed.split(/\s+/).length <= 12 &&  // real addresses are short; long sentences aren't addresses
+      msgTrimmed.split(/\s+/).length <= 20 &&  // Ecuadorian addresses can include cross-street + sector refs
       !/^no\b/i.test(msgTrimmed) &&            // "no quiero..." / "no tengo..." → not an address
       !/^(domicilio|delivery|retiro|local|si|sí|no|ok|dale|listo|claro|perfecto|turno|quiero|para)$/i.test(msgTrimmed) &&
       !/^\d{1,2}:\d{2}/.test(msgTrimmed) &&   // "12:30", "1:30 – 2:30"
@@ -1150,9 +1150,9 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
           geocodeClarificationPending.set(customerPhone, true)
           console.log(`[geocode] Clarification pending set for ${customerPhone}`)
         } else {
-          enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección geocodificada → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido escribe la dirección así: "📍 ${formattedAddress}"]`
+          enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección del cliente → "${customerMessage.trim()}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido escribe la dirección así: "📍 ${customerMessage.trim()}"]`
           console.log(`Zone injected: Zone ${zone} (${distanceKm}km)`)
-          saveDeliveryAddress(customerPhone, formattedAddress, zone, distanceKm).catch(err =>
+          saveDeliveryAddress(customerPhone, customerMessage.trim(), zone, distanceKm).catch(err =>
             console.warn('saveDeliveryAddress failed (non-blocking):', err.message)
           )
         }
@@ -1180,9 +1180,9 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
           // Good geocode — inject zone normally
           const { zone, distanceKm, formattedAddress } = zoneResult
           const orderTypeNote = buildOrderTypeNote()
-          enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección geocodificada (referencia) → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido escribe la dirección así: "📍 ${formattedAddress}"]`
+          enrichedMessage = `${customerMessage}\n\n[SISTEMA: Referencia del cliente → "${customerMessage.trim()}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido escribe la dirección así: "📍 ${customerMessage.trim()}"]`
           console.log(`Clarification zone injected: Zone ${zone} (${distanceKm}km)`)
-          saveDeliveryAddress(customerPhone, formattedAddress, zone, distanceKm).catch(err =>
+          saveDeliveryAddress(customerPhone, customerMessage.trim(), zone, distanceKm).catch(err =>
             console.warn('saveDeliveryAddress (clarification) failed:', err.message)
           )
         } else {
@@ -1243,10 +1243,11 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         // Customer gave a complete, geocodeable address directly
         const { zone, distanceKm, formattedAddress } = directResult
         const orderTypeNote = buildOrderTypeNote()
-        enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección completada por el cliente → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido usa "📍 ${formattedAddress}".]`
+        const fullAddressDirect = `${storedGeo.address}, ${customerMessage.trim()}`
+        enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección completada por el cliente → "${fullAddressDirect}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido usa "📍 ${fullAddressDirect}".]`
         console.log(`[house-number-reply] Direct geocode succeeded: Zone ${zone} (${distanceKm}km) — "${formattedAddress}"`)
         houseNumberPending.delete(customerPhone)  // resolved — clear flag
-        saveDeliveryAddress(customerPhone, formattedAddress, zone, distanceKm).catch(err =>
+        saveDeliveryAddress(customerPhone, fullAddressDirect, zone, distanceKm).catch(err =>
           console.warn('saveDeliveryAddress (house-number direct) failed:', err.message)
         )
       } else {
@@ -1260,10 +1261,10 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         if (isCombinedHighConf) {
           const { zone, distanceKm, formattedAddress } = combinedResult
           const orderTypeNote = buildOrderTypeNote()
-          enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección completada → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido usa "📍 ${formattedAddress}".]`
+          enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección completada → "${combinedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido usa "📍 ${combinedAddress}".]`
           console.log(`[house-number-reply] Combined geocode succeeded: Zone ${zone} (${distanceKm}km) — "${formattedAddress}"`)
           houseNumberPending.delete(customerPhone)  // resolved — clear flag
-          saveDeliveryAddress(customerPhone, formattedAddress, zone, distanceKm).catch(err =>
+          saveDeliveryAddress(customerPhone, combinedAddress, zone, distanceKm).catch(err =>
             console.warn('saveDeliveryAddress (house-number combined) failed:', err.message)
           )
         } else if (combinedResult) {
@@ -1290,9 +1291,9 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         if (!isLowConfidence) {
           const { zone, distanceKm, formattedAddress } = zoneResult
           const orderTypeNote = buildOrderTypeNote()
-          enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección detectada en el mensaje → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido escribe la dirección así: "📍 ${formattedAddress}"]`
+          enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección detectada en el mensaje → "${extractedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido escribe la dirección así: "📍 ${extractedAddress}"]`
           console.log(`[proactive-geocode] Zone injected: Zone ${zone} (${distanceKm}km)`)
-          saveDeliveryAddress(customerPhone, formattedAddress, zone, distanceKm).catch(err =>
+          saveDeliveryAddress(customerPhone, extractedAddress, zone, distanceKm).catch(err =>
             console.warn('saveDeliveryAddress (proactive) failed:', err.message)
           )
         } else {
@@ -1327,9 +1328,9 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         if (!isLowConfidence) {
           const { zone, distanceKm, formattedAddress } = zoneResult
           const orderTypeNote = buildOrderTypeNote()
-          enrichedMessage = `${customerMessage}\n\n[SISTEMA: El cliente completó la dirección con "${customerMessage.trim()}" → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido usa "📍 ${formattedAddress}".]`
+          enrichedMessage = `${customerMessage}\n\n[SISTEMA: El cliente completó la dirección → "${combinedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido usa "📍 ${combinedAddress}".]`
           console.log(`[address-supplement] Zone injected: Zone ${zone} (${distanceKm}km) — "${formattedAddress}"`)
-          saveDeliveryAddress(customerPhone, formattedAddress, zone, distanceKm).catch(err =>
+          saveDeliveryAddress(customerPhone, combinedAddress, zone, distanceKm).catch(err =>
             console.warn('saveDeliveryAddress (supplement) failed:', err.message)
           )
         } else {
