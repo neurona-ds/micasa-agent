@@ -1,14 +1,26 @@
 /**
  * test-rodrigo.js — Proactive geocoding + address supplement flow
  *
- * Simulates Rodrigo's order style with two address scenarios:
+ * Three scenarios testing all reply formats after the bot asks for a house number:
  *
- *  Scenario A — Vague address: "Mariana de Jesús e Inglaterra"
- *    • Proactive geocode fires on first message → GEOMETRIC_CENTER (intersection only)
- *    • Bot asks naturally for house number / building name
- *    • Customer responds with just "E2-24"
- *    • System combines "Mariana de Jesús e Inglaterra, E2-24" → re-geocodes
- *    • Bot gives complete summary with real delivery cost — no HANDOFF
+ *  Scenario A — Short code reply: "E2-24"
+ *    • Direct geocode of bare code fails → combined with base → ROOFTOP
+ *    • Logs: [house-number-reply] Combined geocode succeeded
+ *
+ *  Scenario B — Partial address reply: "Mariana de Jesús E2-24"
+ *    • Direct geocode of partial address → ROOFTOP directly
+ *    • Logs: [house-number-reply] Direct geocode succeeded
+ *
+ *  Scenario C — Full address reply: "Av. Mariana de Jesús E2-24 y 6 de Diciembre"
+ *    • Direct geocode of full address → ROOFTOP directly
+ *    • Logs: [house-number-reply] Direct geocode succeeded
+ *
+ * All scenarios share the same preamble:
+ *   Step 1: Order message with vague address "Mariana de Jesús e Inglaterra"
+ *            → proactive geocode fires → GEOMETRIC_CENTER → raw address saved
+ *   Step 2: "Domicilio por favor" → bot asks for house number / building name
+ *   Step 3: Customer replies with the supplement (varies by scenario)
+ *            → zone resolved → delivery cost in reply → no HANDOFF
  *
  * Run:  node test-rodrigo.js
  */
@@ -31,6 +43,7 @@ const C = {
   reset: '\x1b[0m', bold: '\x1b[1m',
   cyan: '\x1b[36m', green: '\x1b[32m', yellow: '\x1b[33m',
   red: '\x1b[31m',  grey: '\x1b[90m',  blue: '\x1b[34m',
+  magenta: '\x1b[35m',
 }
 
 const results = []
@@ -94,125 +107,139 @@ async function resetDB() {
   origLog(`${C.grey}  [setup] DB reset done${C.reset}`)
 }
 
-// ── MAIN ──────────────────────────────────────────────────────────────────────
-;(async () => {
-  origLog(`\n${C.bold}${'═'.repeat(66)}${C.reset}`)
-  origLog(`${C.bold}  Micasa Bot — Vague Address + Supplement Flow Test${C.reset}`)
-  origLog(`${C.bold}${'═'.repeat(66)}${C.reset}`)
-  origLog(`${C.grey}  Vague address : "Mariana de Jesús e Inglaterra"${C.reset}`)
-  origLog(`${C.grey}  Supplement    : "E2-24"${C.reset}`)
-  origLog(`${C.grey}  Combined      : "Mariana de Jesús e Inglaterra, E2-24" (real Quito address)${C.reset}`)
+// ── Shared scenario runner ────────────────────────────────────────────────────
+// Each scenario: Step1 (order + vague address) → Step2 (delivery) → Step3 (supplement)
+// expectedPath: 'combined' (short code → direct fails → combined) | 'direct' (partial/full)
+async function runScenario(label, supplementMsg, expectedPath) {
+  origLog(`\n${C.magenta}${C.bold}${'─'.repeat(66)}${C.reset}`)
+  origLog(`${C.magenta}${C.bold}  Scenario ${label}: supplement = ${JSON.stringify(supplementMsg)}${C.reset}`)
+  origLog(`${C.magenta}${C.bold}  Expected path: ${expectedPath}${C.reset}`)
+  origLog(`${C.magenta}${C.bold}${'─'.repeat(66)}${C.reset}`)
 
   await resetDB()
 
-  // ════════════════════════════════════════════════════════════════════════════
-  // STEP 1 — First message with vague address embedded
-  // ════════════════════════════════════════════════════════════════════════════
-  origLog(`\n${C.bold}── STEP 1: Order message with vague address "Mariana de Jesús e Inglaterra" ──${C.reset}`)
+  // ── Step 1: Order message with vague address embedded ──────────────────────
+  origLog(`\n${C.bold}── ${label}/S1: Order message with vague address ──${C.reset}`)
 
-  await send('1/4',
+  await send(`${label}/S1`,
     'Buenos días quisiera por favor pedirle para el domingo dos fanescas con pescado a la dirección Mariana de Jesús e Inglaterra, podría por favor mandarme los datos para hacerle la transferencia en la noche, gracias',
     {
-      expectInLog: [
-        '[proactive-geocode] Address keyword detected',
-      ],
-      expectNotInLog: [
-        '[proactive-geocode] Geocoding failed',
-      ],
+      expectInLog: ['[proactive-geocode] Address keyword detected'],
+      expectNotInLog: ['[proactive-geocode] Geocoding failed'],
     }
   )
 
-  origLog(`\n${C.grey}  Checking DB after step 1…${C.reset}`)
+  origLog(`\n${C.grey}  Checking DB after ${label}/S1…${C.reset}`)
   const geo1 = await getCustomerAddress(TEST_PHONE).catch(() => null)
   origLog(`${C.grey}  DB → address="${geo1?.address}"${C.reset}`)
-  origLog(`${C.grey}  DB → zone=${geo1?.zone}  dist=${geo1?.distanceKm}km  locationType=(see log above)${C.reset}`)
+  origLog(`${C.grey}  DB → zone=${geo1?.zone}  dist=${geo1?.distanceKm}km${C.reset}`)
 
   geo1?.address
-    ? pass(`DB: raw address saved — "${geo1.address.substring(0, 65)}"`)
-    : fail(`DB: raw address saved`, 'last_delivery_address is null')
+    ? pass(`${label}: DB raw address saved — "${geo1.address.substring(0, 65)}"`)
+    : fail(`${label}: DB raw address saved`, 'last_delivery_address is null')
 
   const step1ZoneKnown = !!(geo1?.zone)
   if (step1ZoneKnown) {
-    origLog(`${C.grey}  ℹ  Intersection geocoded with high confidence → zone already set (${geo1.zone}). Supplement step may skip.${C.reset}`)
+    origLog(`${C.grey}  ℹ  Intersection geocoded high-conf → zone already set (${geo1.zone}). House-number step may skip.${C.reset}`)
   } else {
-    origLog(`${C.grey}  ℹ  GEOMETRIC_CENTER as expected for bare intersection — supplement step will be needed.${C.reset}`)
+    origLog(`${C.grey}  ℹ  GEOMETRIC_CENTER as expected — house-number supplement step will be needed.${C.reset}`)
   }
 
-  // ════════════════════════════════════════════════════════════════════════════
-  // STEP 2 — "Domicilio por favor"
-  // ════════════════════════════════════════════════════════════════════════════
-  origLog(`\n${C.bold}── STEP 2: "Domicilio por favor" ────────────────────────────────${C.reset}`)
+  // ── Step 2: "Domicilio por favor" ─────────────────────────────────────────
+  origLog(`\n${C.bold}── ${label}/S2: "Domicilio por favor" ──${C.reset}`)
 
-  const { reply: step2reply, needsHandoff: step2handoff } = await send('2/4', 'Domicilio por favor', {
+  const { reply: step2reply, needsHandoff: step2handoff } = await send(`${label}/S2`, 'Domicilio por favor', {
     expectNotInReply: ['A confirmar por un asesor', 'asesor confirmará'],
     expectNotInLog:   ['NO-ZONE safety net injected'],
   })
   origLog(`${C.grey}  Full reply:\n${step2reply}${C.reset}`)
 
   if (step1ZoneKnown) {
-    // Zone was already set in step 1 — bot should offer the address back, not ask for number
     const offersPrevAddress = /dirección anterior|Mariana de Jesús/i.test(step2reply)
     offersPrevAddress
-      ? pass('Bot offers saved address back (zone known from step 1)')
-      : fail('Bot offers saved address back', `got: "${step2reply.substring(0,160)}"`)
+      ? pass(`${label}: Bot offers saved address back (zone known from S1)`)
+      : fail(`${label}: Bot offers saved address back`, `got: "${step2reply.substring(0,160)}"`)
   } else {
-    // Zone not known — bot should ask for house number
     const asksForHouseNumber = /número|edificio|casa|complemento|completa/i.test(step2reply)
     asksForHouseNumber
-      ? pass('Bot asks for house number / building name naturally')
-      : fail('Bot asks for house number', `got: "${step2reply.substring(0,160)}"`)
+      ? pass(`${label}: Bot asks for house number / building name naturally`)
+      : fail(`${label}: Bot asks for house number`, `got: "${step2reply.substring(0,160)}"`)
   }
 
   !step2handoff
-    ? pass('No HANDOFF at step 2')
-    : fail('No HANDOFF at step 2', 'bot escalated before getting house number')
+    ? pass(`${label}: No HANDOFF at S2`)
+    : fail(`${label}: No HANDOFF at S2`, 'bot escalated before getting house number')
 
-  // ════════════════════════════════════════════════════════════════════════════
-  // STEP 3 — Customer sends JUST the house number "E2-24"
-  // ════════════════════════════════════════════════════════════════════════════
-  origLog(`\n${C.bold}── STEP 3: Customer responds with just "E2-24" ──────────────────${C.reset}`)
-  origLog(`${C.grey}  System should combine → "Mariana de Jesús e Inglaterra, E2-24" and re-geocode${C.reset}`)
+  // ── Step 3: Customer replies with the supplement ──────────────────────────
+  origLog(`\n${C.bold}── ${label}/S3: Customer replies with ${JSON.stringify(supplementMsg)} ──${C.reset}`)
+  if (expectedPath === 'combined') {
+    origLog(`${C.grey}  Expected: direct fails → combined "${geo1?.address || 'Mariana de Jesús e Inglaterra'}, ${supplementMsg}"${C.reset}`)
+  } else {
+    origLog(`${C.grey}  Expected: direct geocode of "${supplementMsg}" → ROOFTOP${C.reset}`)
+  }
 
-  const { reply: step3reply, needsHandoff: step3handoff } = await send('3/4', 'E2-24', {
-    expectInLog:    ['[address-supplement] Re-geocoding combined'],
-    expectNotInLog: ['[address-supplement] Geocoding failed'],
-  })
+  const step3Expectations = {
+    expectInLog:    ['[house-number-reply] Geocoding response'],
+    expectNotInLog: ['[address-supplement] Re-geocoding combined'],  // should NOT fall back to old supplement path
+  }
+  if (expectedPath === 'combined') {
+    step3Expectations.expectInLog.push('[house-number-reply] Combined geocode succeeded')
+    step3Expectations.expectNotInLog.push('[house-number-reply] Both geocodes low-conf')
+  } else {
+    step3Expectations.expectInLog.push('[house-number-reply] Direct geocode succeeded')
+    step3Expectations.expectNotInLog.push('[house-number-reply] Direct low-conf/null')
+  }
+
+  const { reply: step3reply, needsHandoff: step3handoff } = await send(`${label}/S3`, supplementMsg, step3Expectations)
   origLog(`${C.grey}  Full reply:\n${step3reply}${C.reset}`)
 
-  origLog(`\n${C.grey}  Checking DB after step 3…${C.reset}`)
+  origLog(`\n${C.grey}  Checking DB after ${label}/S3…${C.reset}`)
   const geo3 = await getCustomerAddress(TEST_PHONE).catch(() => null)
   origLog(`${C.grey}  DB → address="${geo3?.address}"${C.reset}`)
   origLog(`${C.grey}  DB → zone=${geo3?.zone}  dist=${geo3?.distanceKm}km${C.reset}`)
 
-  // Combined address must be saved
-  const combinedSaved = geo3?.address?.includes('E2-24') || geo3?.address?.includes('Mariana')
-  combinedSaved
-    ? pass(`DB: combined address saved — "${(geo3?.address || '').substring(0, 70)}"`)
-    : fail(`DB: combined address saved`, `got address="${geo3?.address}"`)
+  // Address must include something recognizable from the supplement or base
+  const addressSaved = geo3?.address?.includes('E2-24') ||
+    geo3?.address?.toLowerCase().includes('mariana') ||
+    geo3?.address?.toLowerCase().includes('6 de diciembre')
+  addressSaved
+    ? pass(`${label}: DB address saved after supplement — "${(geo3?.address || '').substring(0, 70)}"`)
+    : fail(`${label}: DB address saved after supplement`, `got address="${geo3?.address}"`)
 
-  // Zone should now be set — "Mariana de Jesús E2-24, Quito" is a real Quito address
+  // Zone must now be set
   geo3?.zone
-    ? pass(`DB: zone resolved from combined address — Zone ${geo3.zone} (${geo3.distanceKm}km)`)
-    : fail(`DB: zone resolved`, 'zone still null after combining with real house number E2-24')
+    ? pass(`${label}: DB zone resolved — Zone ${geo3.zone} (${geo3.distanceKm}km)`)
+    : fail(`${label}: DB zone resolved`, 'zone still null after supplement reply')
 
-  const supplementFiredHighConf = logged('[address-supplement] Zone injected')
-  supplementFiredHighConf
-    ? pass('"[address-supplement] Zone injected" in logs — ROOFTOP/RANGE geocode confirmed')
-    : fail('"[address-supplement] Zone injected" in logs', 'combined address still low-confidence')
-
-  // ════════════════════════════════════════════════════════════════════════════
-  // STEP 4 — Bot summary must include a concrete delivery cost, no HANDOFF
-  // ════════════════════════════════════════════════════════════════════════════
-  origLog(`\n${C.bold}── STEP 4: Summary with real delivery cost, no HANDOFF ──────────${C.reset}`)
-
+  // Reply must contain a concrete delivery cost
   const hasDeliveryCost = /\$\s*\d+[\.,]\d{2}/.test(step3reply) || /envío.*\$\d/i.test(step3reply)
   hasDeliveryCost
-    ? pass('Reply contains concrete delivery cost after house number provided')
-    : fail('Reply contains concrete delivery cost', `got: "${step3reply.substring(0,220)}"`)
+    ? pass(`${label}: Reply contains concrete delivery cost`)
+    : fail(`${label}: Reply contains concrete delivery cost`, `got: "${step3reply.substring(0,220)}"`)
 
   !step3handoff
-    ? pass('No HANDOFF — bot resolved delivery cost autonomously')
-    : fail('No HANDOFF after supplement', 'bot still escalated for delivery cost')
+    ? pass(`${label}: No HANDOFF — bot resolved delivery cost autonomously`)
+    : fail(`${label}: No HANDOFF after supplement`, 'bot still escalated for delivery cost')
+}
+
+// ── MAIN ──────────────────────────────────────────────────────────────────────
+;(async () => {
+  origLog(`\n${C.bold}${'═'.repeat(66)}${C.reset}`)
+  origLog(`${C.bold}  Micasa Bot — House Number Reply Flow — All 3 Formats${C.reset}`)
+  origLog(`${C.bold}${'═'.repeat(66)}${C.reset}`)
+  origLog(`${C.grey}  Vague base address: "Mariana de Jesús e Inglaterra" (GEOMETRIC_CENTER)${C.reset}`)
+  origLog(`${C.grey}  Scenario A: short code    → "E2-24"${C.reset}`)
+  origLog(`${C.grey}  Scenario B: partial addr  → "Mariana de Jesús E2-24"${C.reset}`)
+  origLog(`${C.grey}  Scenario C: full address  → "Av. Mariana de Jesús E2-24 y 6 de Diciembre"${C.reset}`)
+
+  // ── Scenario A: short code "E2-24" → direct fails → combined succeeds ────
+  await runScenario('A', 'E2-24', 'combined')
+
+  // ── Scenario B: partial address → direct geocode succeeds ─────────────────
+  await runScenario('B', 'Mariana de Jesús E2-24', 'direct')
+
+  // ── Scenario C: full address → direct geocode succeeds ────────────────────
+  await runScenario('C', 'Av. Mariana de Jesús E2-24 y 6 de Diciembre', 'direct')
 
   // ── Summary ──────────────────────────────────────────────────────────────
   console.log  = origLog
@@ -228,7 +255,7 @@ async function resetDB() {
     origLog(`\n${C.red}${C.bold}  Failed assertions:${C.reset}`)
     failed.forEach(f => origLog(`    ${C.red}✗${C.reset} ${f.label}${f.reason ? ` — ${f.reason}` : ''}`))
   } else {
-    origLog(`\n${C.green}${C.bold}  ✅ All assertions passed! Vague address + supplement flow working end-to-end.${C.reset}`)
+    origLog(`\n${C.green}${C.bold}  ✅ All assertions passed! All 3 reply formats working end-to-end.${C.reset}`)
   }
   origLog(`${C.bold}${'═'.repeat(66)}${C.reset}\n`)
   process.exit(failed.length > 0 ? 1 : 0)

@@ -986,6 +986,17 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     // rather than parsing Claude's reply text — Claude's wording varies, making keyword checks fragile.
     const lastBotAskedClarification = geocodeClarificationPending.get(customerPhone) === true
 
+    // Detect when Claude's last reply asked for a house number / building name.
+    // This happens when stored address has no zone (GEOMETRIC_CENTER intersection) and the
+    // SISTEMA tag instructed Claude to ask for the supplement. Claude consistently uses the
+    // phrases "número de casa" and/or "nombre del edificio" from the tag template.
+    // When true → the NEXT customer message is a supplement reply (any form: short number,
+    // partial address, full address) and we geocode more broadly.
+    const lastBotAskedHouseNumber = !!(lastBotMsg && (
+      lastBotMsg.message.includes('número de casa') ||
+      lastBotMsg.message.includes('nombre del edificio')
+    ))
+
     // Quick sanity check: is this message plausibly an address?
     // Avoids geocoding short replies, turn-time answers, and conversational sentences.
     const msgTrimmed = customerMessage.trim()
@@ -1024,24 +1035,31 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     // when the bot didn't explicitly ask for the address (e.g., customer includes address
     // in their first message: "quiero fanescas a la dirección Jorge Juan y Mariana de Jesús").
     // Only evaluated when none of the primary geocoding triggers are active, to avoid overhead.
-    const proactiveAddressMatch = (!isMapsUrl && !lastBotAskedAddress && !lastBotAskedClarification)
+    const proactiveAddressMatch = (!isMapsUrl && !lastBotAskedAddress && !lastBotAskedClarification && !lastBotAskedHouseNumber)
       ? customerMessage.match(/(?:a (?:la |mi )?direcci[oó]n|mi direcci[oó]n es|direcci[oó]n:)\s+(.+?)(?=,\s*(?:por favor|podr[ií]|si puede|necesit|gracias)|$)/i)
       : null
 
-    // Address-supplement detection: fires when the customer responds with ONLY a house number
-    // or building name (e.g. "E27-48", "Edificio Torres del Este") after the bot asked for it,
-    // because the stored address is a landmark/intersection (GEOMETRIC_CENTER → no zone saved).
-    // The supplement is combined with the stored raw address for a combined geocode.
+    // Conversational non-address filter — shared by house-number-reply and supplement branches.
+    // Avoids geocoding obvious non-address replies like confirmations, greetings, questions.
+    const isSimpleConversation = (
+      msgTrimmed.length < 2 ||
+      /^(si|sí|no|ok|dale|listo|claro|perfecto|espera|momento|después|luego|gracias|entendido|hola|buenas|buenos|genial|excelente|confirmado|confirmo)$/i.test(msgTrimmed) ||
+      /^(qué|cómo|cuándo|cuánto|puedes|puedo|quiero|quisiera|necesito|hay|tienes|tengo)\b/i.test(msgTrimmed)
+    )
+
+    // Address-supplement detection (narrow fallback): fires when stored address has no zone AND
+    // the message looks like a short Ecuadorian number/building. Used as a fallback when
+    // lastBotAskedHouseNumber didn't fire (Claude phrased the question differently).
     const storedAddressNoZone = !!(storedGeo?.address && !storedGeo?.zone)
     const looksLikeAddressSupplement = storedAddressNoZone &&
-      !isMapsUrl && !lastBotAskedAddress && !lastBotAskedClarification && !proactiveAddressMatch &&
+      !isMapsUrl && !lastBotAskedAddress && !lastBotAskedClarification &&
+      !lastBotAskedHouseNumber && !proactiveAddressMatch &&
+      !isSimpleConversation &&
       msgTrimmed.length >= 2 && msgTrimmed.length <= 60 &&
       msgTrimmed.split(/\s+/).length <= 10 &&
       // Must contain an Ecuadorian street number, building name, floor, unit, or similar
       /[A-Za-z]{1,2}\d{1,3}[-–]\d{1,4}|\bn[°º]?\s*\d+|#\s*\d+|\bedificio\b|\bpiso\s+\d|\bdepto\.?\b|\bdepartamento\b|\bbloque\s+\w|\bcasa\s+\d|\bsuite\s+\w/i.test(msgTrimmed) &&
-      // Exclude times (12:30), simple confirmations, and delivery-type words
-      !/^\d{1,2}:\d{2}/.test(msgTrimmed) &&
-      !/^(si|sí|no|ok|dale|listo|claro|perfecto|domicilio|delivery|local|retiro|confirmo|confirmado|gracias)$/i.test(msgTrimmed)
+      !/^\d{1,2}:\d{2}/.test(msgTrimmed)
 
     if (isMapsUrl) {
       // ── Maps URL: resolve redirect → extract real coords → accurate zone ──
@@ -1170,6 +1188,78 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         )
         enrichedMessage = `${customerMessage}\n\n[SISTEMA: ⚠️ ZONA NO CONFIRMADA — No se pudo determinar la ubicación del cliente. NUNCA incluyas costo de envío en el resumen. Indica al cliente que un administrador confirmará el costo de envío. Usa HANDOFF para que un humano resuelva la zona y el precio de envío.]`
       }
+    } else if (lastBotAskedHouseNumber && storedAddressNoZone && !isSimpleConversation) {
+      // ── House-number reply: bot asked for number/building, handle ALL reply forms ──────
+      // Customer may reply with:
+      //   (a) Just the number:      "E2-24"
+      //   (b) Partial/remaining:    "Mariana de Jesús E2-24"
+      //   (c) Full new address:     "Mariana de Jesús E2-24 y 6 de Diciembre, La Gasca"
+      //   (d) Maps URL:             handled by isMapsUrl branch above
+      //
+      // Strategy: for bare house-number codes (a), skip direct geocode — Google returns
+      //           RANGE_INTERPOLATED for short codes like "E2-24" but maps them to a
+      //           completely different street → always unreliable without context.
+      //           For partial/full addresses (b/c), try direct geocode first.
+      //           Falls back to combined with stored base if direct is low-conf or null.
+      //           If both low-confidence → save best combined raw without discarding base.
+      //           If both null → keep existing stored address untouched.
+
+      console.log(`[house-number-reply] Geocoding response: "${customerMessage.trim()}"`)
+
+      // Bare house-number codes: single token that looks like "E2-24", "N24-15", "#12", "n°3"
+      // These geocode unreliably in isolation → skip direct, go straight to combined.
+      const isPureHouseNumber = (
+        msgTrimmed.split(/\s+/).length === 1 &&
+        (
+          /^[A-Za-z]{0,2}\d{1,3}[-–]\d{1,4}$/.test(msgTrimmed) ||          // E2-24, OE6-12
+          /^n[°º]?\s*\d+[-–]?\d*$/i.test(msgTrimmed) ||                     // n°24, N24
+          /^#\s*\d+[A-Za-z]?$/.test(msgTrimmed)                              // #24, #24B
+        )
+      )
+
+      const directResult = isPureHouseNumber
+        ? null   // skip direct geocode for bare codes — combine with base instead
+        : await getDeliveryZoneByAddress(customerMessage).catch(() => null)
+      if (isPureHouseNumber) {
+        console.log(`[house-number-reply] Pure house-number code detected — skipping direct geocode, combining with base`)
+      }
+      const isDirectHighConf = directResult &&
+        !['GEOMETRIC_CENTER', 'APPROXIMATE'].includes(directResult.locationType)
+
+      if (isDirectHighConf) {
+        // Customer gave a complete, geocodeable address directly
+        const { zone, distanceKm, formattedAddress } = directResult
+        const orderTypeNote = buildOrderTypeNote()
+        enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección completada por el cliente → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido usa "📍 ${formattedAddress}".]`
+        console.log(`[house-number-reply] Direct geocode succeeded: Zone ${zone} (${distanceKm}km) — "${formattedAddress}"`)
+        saveDeliveryAddress(customerPhone, formattedAddress, zone, distanceKm).catch(err =>
+          console.warn('saveDeliveryAddress (house-number direct) failed:', err.message)
+        )
+      } else {
+        // Direct geocode low-conf or null → combine with stored base address
+        const combinedAddress = `${storedGeo.address}, ${customerMessage.trim()}`
+        console.log(`[house-number-reply] Direct low-conf/null — trying combined: "${combinedAddress}"`)
+        const combinedResult = await getDeliveryZoneByAddress(combinedAddress).catch(() => null)
+        const isCombinedHighConf = combinedResult &&
+          !['GEOMETRIC_CENTER', 'APPROXIMATE'].includes(combinedResult.locationType)
+
+        if (isCombinedHighConf) {
+          const { zone, distanceKm, formattedAddress } = combinedResult
+          const orderTypeNote = buildOrderTypeNote()
+          enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección completada → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido usa "📍 ${formattedAddress}".]`
+          console.log(`[house-number-reply] Combined geocode succeeded: Zone ${zone} (${distanceKm}km) — "${formattedAddress}"`)
+          saveDeliveryAddress(customerPhone, formattedAddress, zone, distanceKm).catch(err =>
+            console.warn('saveDeliveryAddress (house-number combined) failed:', err.message)
+          )
+        } else if (combinedResult) {
+          // Both returned GEOMETRIC_CENTER — save combined raw; better than losing the supplement
+          console.warn(`[house-number-reply] Both geocodes low-conf — saving combined raw: "${combinedAddress}"`)
+          saveRawAddress(customerPhone, combinedAddress).catch(err =>
+            console.warn('saveRawAddress (house-number both-low) failed:', err.message)
+          )
+        }
+        // If both null → don't overwrite the existing stored address; keep what we have
+      }
     } else if (proactiveAddressMatch) {
       // ── Proactive geocoding: address keyword detected in unprompted message ──────────
       // Customer included their address before bot asked (e.g., "quiero fanescas a la
@@ -1265,7 +1355,7 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       const shortBase = storedGeo.address.length > 60
         ? storedGeo.address.substring(0, 60) + '…'
         : storedGeo.address
-      enrichedMessage += `\n\n[SISTEMA: Este cliente indicó anteriormente la dirección de referencia: "${storedGeo.address}" — pero es una intersección o referencia sin número de casa exacto, por lo que AÚN NO se puede calcular el costo de envío. Cuando llegue el momento de confirmar la dirección de entrega, pide de forma natural SOLO el número de casa o nombre del edificio (NO la dirección completa de nuevo). Ejemplo: "Para darte el costo de envío exacto, ¿nos podrías dar el número de casa o el nombre del edificio en ${shortBase}? 🏠" — Si el cliente responde solo con el número (ej. E27-48, Edificio Torres), el sistema combinará automáticamente con la dirección base. Si envía un pin de ubicación, úsalo directamente.]`
+      enrichedMessage += `\n\n[SISTEMA: Este cliente indicó anteriormente la dirección de referencia: "${storedGeo.address}" — pero es una intersección o referencia sin número de casa exacto, por lo que AÚN NO se puede calcular el costo de envío. Cuando llegue el momento de confirmar la dirección de entrega, pide de forma natural el número de casa, nombre del edificio, o su ubicación de Google Maps. Ejemplo: "Para darte el costo de envío exacto, ¿nos podrías dar el número de casa o el nombre del edificio en ${shortBase}? Puedes también compartir tu ubicación de Google Maps 📍🏠" — El cliente puede responder con solo el número (ej. E2-24), con la dirección parcial (Mariana de Jesús E2-24), con la dirección completa, o con un pin/link de Maps. El sistema geocodificará automáticamente cualquier formato.]`
     } else if (storedGeo?.address) {
       // Complete address with zone — offer it back verbatim
       enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una dirección registrada: "${storedGeo.address}". Al momento de pedir la dirección de entrega, SIEMPRE ofrece primero esta opción preguntando: "¿Enviamos a tu dirección anterior — ${storedGeo.address} — o prefieres indicar una nueva? 📍". Si el cliente confirma, usa EXACTAMENTE esta dirección. Si da una nueva, úsala y descarta la registrada.]`
