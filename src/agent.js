@@ -14,6 +14,13 @@ const client = new Anthropic({
 // Cleared on successful re-geocode or when the session ends.
 const geocodeClarificationPending = new Map()
 
+// In-process flag: tracks customers who gave a vague/intersection address that returned
+// GEOMETRIC_CENTER → they still need to provide a house number or building name.
+// Set when any proactive geocode returns GEOMETRIC_CENTER and saves a raw address.
+// Cleared when the house-number-reply branch resolves with a high-confidence geocode.
+// This makes house-number detection independent of Claude's exact phrasing.
+const houseNumberPending = new Map()
+
 // Return a Date object representing the current moment in Ecuador time (UTC-5).
 // Ecuador does not observe DST so this offset is always fixed.
 // We use this everywhere we need "today" — using raw new Date() returns UTC
@@ -930,6 +937,8 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
           console.warn(`[proactive-geocode] Low confidence or failed for: "${_extractedAddr}" — saving raw address`)
           await saveRawAddress(customerPhone, _extractedAddr)
             .catch(e => console.warn('saveRawAddress (fanesca fast-path) failed:', e.message))
+          houseNumberPending.set(customerPhone, true)
+          console.log(`[proactive-geocode] houseNumberPending set for ${customerPhone}`)
         }
       }
 
@@ -986,13 +995,12 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     // rather than parsing Claude's reply text — Claude's wording varies, making keyword checks fragile.
     const lastBotAskedClarification = geocodeClarificationPending.get(customerPhone) === true
 
-    // Detect when Claude's last reply asked for a house number / building name.
-    // This happens when stored address has no zone (GEOMETRIC_CENTER intersection) and the
-    // SISTEMA tag instructed Claude to ask for the supplement. Claude consistently uses the
-    // phrases "número de casa" and/or "nombre del edificio" from the tag template.
-    // When true → the NEXT customer message is a supplement reply (any form: short number,
-    // partial address, full address) and we geocode more broadly.
-    const lastBotAskedHouseNumber = !!(lastBotMsg && (
+    // Detect when the system is waiting for a house number / building name supplement.
+    // Primary signal: houseNumberPending flag (set in-process when proactive geocode returns
+    // GEOMETRIC_CENTER) — reliable regardless of Claude's exact phrasing.
+    // Secondary signal: keyword match on last bot message (Claude's typical phrasings from
+    // the SISTEMA tag template) — catches cases where flag wasn't set (e.g., older sessions).
+    const lastBotAskedHouseNumber = houseNumberPending.get(customerPhone) === true || !!(lastBotMsg && (
       lastBotMsg.message.includes('número de casa') ||
       lastBotMsg.message.includes('nombre del edificio')
     ))
@@ -1040,11 +1048,16 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       : null
 
     // Conversational non-address filter — shared by house-number-reply and supplement branches.
-    // Avoids geocoding obvious non-address replies like confirmations, greetings, questions.
+    // Avoids geocoding obvious non-address replies like confirmations, greetings, delivery/pickup
+    // selections, and general questions. Must NOT accidentally catch real address supplements.
     const isSimpleConversation = (
       msgTrimmed.length < 2 ||
+      // Single-word confirmations / greetings
       /^(si|sí|no|ok|dale|listo|claro|perfecto|espera|momento|después|luego|gracias|entendido|hola|buenas|buenos|genial|excelente|confirmado|confirmo)$/i.test(msgTrimmed) ||
-      /^(qué|cómo|cuándo|cuánto|puedes|puedo|quiero|quisiera|necesito|hay|tienes|tengo)\b/i.test(msgTrimmed)
+      // Messages starting with conversational verbs or question words
+      /^(qué|cómo|cuándo|cuánto|puedes|puedo|quiero|quisiera|necesito|hay|tienes|tengo)\b/i.test(msgTrimmed) ||
+      // Delivery/pickup intent words — these are order-type choices, never address supplements
+      /^(domicilio|delivery|a domicilio|para llevar|para recoger|retiro|retirar|en el local|pick.?up)\b/i.test(msgTrimmed)
     )
 
     // Address-supplement detection (narrow fallback): fires when stored address has no zone AND
@@ -1232,6 +1245,7 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         const orderTypeNote = buildOrderTypeNote()
         enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección completada por el cliente → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido usa "📍 ${formattedAddress}".]`
         console.log(`[house-number-reply] Direct geocode succeeded: Zone ${zone} (${distanceKm}km) — "${formattedAddress}"`)
+        houseNumberPending.delete(customerPhone)  // resolved — clear flag
         saveDeliveryAddress(customerPhone, formattedAddress, zone, distanceKm).catch(err =>
           console.warn('saveDeliveryAddress (house-number direct) failed:', err.message)
         )
@@ -1248,6 +1262,7 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
           const orderTypeNote = buildOrderTypeNote()
           enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección completada → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido usa "📍 ${formattedAddress}".]`
           console.log(`[house-number-reply] Combined geocode succeeded: Zone ${zone} (${distanceKm}km) — "${formattedAddress}"`)
+          houseNumberPending.delete(customerPhone)  // resolved — clear flag
           saveDeliveryAddress(customerPhone, formattedAddress, zone, distanceKm).catch(err =>
             console.warn('saveDeliveryAddress (house-number combined) failed:', err.message)
           )
@@ -1281,18 +1296,22 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
             console.warn('saveDeliveryAddress (proactive) failed:', err.message)
           )
         } else {
-          // Low confidence — save raw address and continue without zone injection
+          // Low confidence — save raw address and flag that we need a supplement
           console.warn(`[proactive-geocode] Low confidence: "${extractedAddress}" → "${zoneResult.formattedAddress}" — saving raw address`)
           saveRawAddress(customerPhone, extractedAddress).catch(err =>
             console.warn('saveRawAddress (proactive-low) failed:', err.message)
           )
+          houseNumberPending.set(customerPhone, true)
+          console.log(`[proactive-geocode] houseNumberPending set for ${customerPhone}`)
         }
       } else {
-        // Geocoding failed — save raw address so it's not lost
+        // Geocoding failed — save raw address and flag for supplement
         console.warn(`[proactive-geocode] Geocoding failed for: "${extractedAddress}" — saving raw address`)
         saveRawAddress(customerPhone, extractedAddress).catch(err =>
           console.warn('saveRawAddress (proactive-fail) failed:', err.message)
         )
+        houseNumberPending.set(customerPhone, true)
+        console.log(`[proactive-geocode] houseNumberPending set for ${customerPhone}`)
       }
     } else if (looksLikeAddressSupplement) {
       // ── Address supplement: customer provided house number / building name ──────────
@@ -1443,8 +1462,9 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       const inPersonReply = '¡Perfecto! 😊 Te estaremos esperando. El pago se realiza directamente en el local. ¡Hasta pronto! 👋'
       await saveMessage(customerPhone, 'user', customerMessage, sessionId)
       await saveMessage(customerPhone, 'assistant', inPersonReply, sessionId)
-      // Conversation complete — end session and clear clarification flag
+      // Conversation complete — end session and clear geocoding flags
       geocodeClarificationPending.delete(customerPhone)
+      houseNumberPending.delete(customerPhone)
       endSession(customerPhone).catch(() => {})
       return {
         reply: inPersonReply,
@@ -1627,6 +1647,7 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         // Session stays open — it will be closed by closeOrderSession() when the
         // operator sends "📦 Orden Confirmada" to the customer.
         geocodeClarificationPending.delete(customerPhone)
+        houseNumberPending.delete(customerPhone)
         clearPendingOrder(customerPhone).catch(() => {})
       } else {
         console.warn('Zoho: HANDOFF_PAYMENT detected but no order data found — skipping')
@@ -1701,6 +1722,7 @@ async function triggerZohoOnPayment(customerPhone, customerName) {
     // Session stays open — it will be closed by closeOrderSession() when the
     // operator sends "📦 Orden Confirmada" to the customer.
     geocodeClarificationPending.delete(customerPhone)
+    houseNumberPending.delete(customerPhone)
     clearPendingOrder(customerPhone).catch(() => {})
   } catch (err) {
     console.error('Zoho triggerZohoOnPayment error (non-blocking):', err.message)
@@ -1717,6 +1739,7 @@ async function triggerZohoOnPayment(customerPhone, customerName) {
  */
 async function closeOrderSession(phone) {
   geocodeClarificationPending.delete(phone)
+  houseNumberPending.delete(phone)
   await endSession(phone).catch(e => console.error('[closeOrderSession] endSession error:', e.message))
   console.log(`[closeOrderSession] Session closed for ${phone}`)
 }
