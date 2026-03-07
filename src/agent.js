@@ -1028,6 +1028,21 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       ? customerMessage.match(/(?:a (?:la |mi )?direcci[oó]n|mi direcci[oó]n es|direcci[oó]n:)\s+(.+?)(?=,\s*(?:por favor|podr[ií]|si puede|necesit|gracias)|$)/i)
       : null
 
+    // Address-supplement detection: fires when the customer responds with ONLY a house number
+    // or building name (e.g. "E27-48", "Edificio Torres del Este") after the bot asked for it,
+    // because the stored address is a landmark/intersection (GEOMETRIC_CENTER → no zone saved).
+    // The supplement is combined with the stored raw address for a combined geocode.
+    const storedAddressNoZone = !!(storedGeo?.address && !storedGeo?.zone)
+    const looksLikeAddressSupplement = storedAddressNoZone &&
+      !isMapsUrl && !lastBotAskedAddress && !lastBotAskedClarification && !proactiveAddressMatch &&
+      msgTrimmed.length >= 2 && msgTrimmed.length <= 60 &&
+      msgTrimmed.split(/\s+/).length <= 10 &&
+      // Must contain an Ecuadorian street number, building name, floor, unit, or similar
+      /[A-Za-z]{1,2}\d{1,3}[-–]\d{1,4}|\bn[°º]?\s*\d+|#\s*\d+|\bedificio\b|\bpiso\s+\d|\bdepto\.?\b|\bdepartamento\b|\bbloque\s+\w|\bcasa\s+\d|\bsuite\s+\w/i.test(msgTrimmed) &&
+      // Exclude times (12:30), simple confirmations, and delivery-type words
+      !/^\d{1,2}:\d{2}/.test(msgTrimmed) &&
+      !/^(si|sí|no|ok|dale|listo|claro|perfecto|domicilio|delivery|local|retiro|confirmo|confirmado|gracias)$/i.test(msgTrimmed)
+
     if (isMapsUrl) {
       // ── Maps URL: resolve redirect → extract real coords → accurate zone ──
       // Runs regardless of conversation state — zone is always needed for pricing.
@@ -1189,6 +1204,38 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
           console.warn('saveRawAddress (proactive-fail) failed:', err.message)
         )
       }
+    } else if (looksLikeAddressSupplement) {
+      // ── Address supplement: customer provided house number / building name ──────────
+      // The stored address is a landmark/intersection that returned GEOMETRIC_CENTER.
+      // Combine stored base + this supplement and re-geocode for an exact zone.
+      const combinedAddress = `${storedGeo.address}, ${customerMessage.trim()}`
+      console.log(`[address-supplement] Re-geocoding combined: "${combinedAddress}"`)
+      const zoneResult = await getDeliveryZoneByAddress(combinedAddress)
+
+      if (zoneResult) {
+        const isLowConfidence = ['GEOMETRIC_CENTER', 'APPROXIMATE'].includes(zoneResult.locationType)
+
+        if (!isLowConfidence) {
+          const { zone, distanceKm, formattedAddress } = zoneResult
+          const orderTypeNote = buildOrderTypeNote()
+          enrichedMessage = `${customerMessage}\n\n[SISTEMA: El cliente completó la dirección con "${customerMessage.trim()}" → "${formattedAddress}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido usa "📍 ${formattedAddress}".]`
+          console.log(`[address-supplement] Zone injected: Zone ${zone} (${distanceKm}km) — "${formattedAddress}"`)
+          saveDeliveryAddress(customerPhone, formattedAddress, zone, distanceKm).catch(err =>
+            console.warn('saveDeliveryAddress (supplement) failed:', err.message)
+          )
+        } else {
+          // Still low confidence — save the combined string as raw; Claude will work from it
+          console.warn(`[address-supplement] Still low confidence for combined: "${combinedAddress}"`)
+          saveRawAddress(customerPhone, combinedAddress).catch(err =>
+            console.warn('saveRawAddress (supplement-low) failed:', err.message)
+          )
+        }
+      } else {
+        console.warn(`[address-supplement] Geocoding failed for: "${combinedAddress}"`)
+        saveRawAddress(customerPhone, combinedAddress).catch(err =>
+          console.warn('saveRawAddress (supplement-fail) failed:', err.message)
+        )
+      }
     }
 
     // ── Bug 1 safety net: NO-ZONE injection when no enrichment happened ──────
@@ -1212,8 +1259,15 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     const isRestaurantOpen = checkIsOpen(businessHours, nowEc)
 
     // Inject stored delivery info so Claude can offer it to the customer without asking from scratch.
-    if (storedGeo?.address) {
-      // Customer previously typed a text address — offer it back verbatim
+    if (storedGeo?.address && !storedGeo?.zone) {
+      // Address saved but no zone — it's a landmark/intersection without an exact house number.
+      // Claude must ask naturally for JUST the number or building name (not the full address again).
+      const shortBase = storedGeo.address.length > 60
+        ? storedGeo.address.substring(0, 60) + '…'
+        : storedGeo.address
+      enrichedMessage += `\n\n[SISTEMA: Este cliente indicó anteriormente la dirección de referencia: "${storedGeo.address}" — pero es una intersección o referencia sin número de casa exacto, por lo que AÚN NO se puede calcular el costo de envío. Cuando llegue el momento de confirmar la dirección de entrega, pide de forma natural SOLO el número de casa o nombre del edificio (NO la dirección completa de nuevo). Ejemplo: "Para darte el costo de envío exacto, ¿nos podrías dar el número de casa o el nombre del edificio en ${shortBase}? 🏠" — Si el cliente responde solo con el número (ej. E27-48, Edificio Torres), el sistema combinará automáticamente con la dirección base. Si envía un pin de ubicación, úsalo directamente.]`
+    } else if (storedGeo?.address) {
+      // Complete address with zone — offer it back verbatim
       enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una dirección registrada: "${storedGeo.address}". Al momento de pedir la dirección de entrega, SIEMPRE ofrece primero esta opción preguntando: "¿Enviamos a tu dirección anterior — ${storedGeo.address} — o prefieres indicar una nueva? 📍". Si el cliente confirma, usa EXACTAMENTE esta dirección. Si da una nueva, úsala y descarta la registrada.]`
     } else if (storedGeo?.locationPin) {
       // Customer previously shared a location pin.

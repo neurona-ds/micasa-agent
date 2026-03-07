@@ -126,27 +126,50 @@ async function send(label, message, { expectInLog = [], expectNotInLog = [], exp
   // ── Step 2 — Customer confirms delivery ──────────────────────────────────
   origLog(`\n${C.bold}── STEP 2: "Domicilio por favor" ───────────────────────────────${C.reset}`)
   const { reply: step2reply, needsHandoff: step2handoff } = await send('2/3', 'Domicilio por favor', {
-    // Key fix: bot should NOT say "A confirmar por un asesor" and should NOT HANDOFF
-    // just because the customer said "domicilio" — it already has the address.
-    // Instead it should offer the saved address back or proceed with order intake.
     expectNotInReply: ['A confirmar por un asesor', 'asesor confirmará'],
     expectNotInLog:   ['NO-ZONE safety net injected'],
   })
   origLog(`${C.grey}  Full reply:\n${step2reply}${C.reset}`)
 
-  // Bot should offer the saved address back — the core UX improvement
-  const offersStoredAddress = step2reply.includes('Jorge Juan') || step2reply.includes('dirección anterior')
-  offersStoredAddress
-    ? pass('Bot offers saved address back to customer (no repeated asking)')
-    : fail('Bot offers saved address back', `got: "${step2reply.substring(0,120)}"`)
+  // Bot should ask for house number / building name (the new SISTEMA tag fires here)
+  const asksForHouseNumber = /número|edificio|casa|complemento|completa/i.test(step2reply)
+  asksForHouseNumber
+    ? pass('Bot asks for house number / building name naturally')
+    : fail('Bot asks for house number', `got: "${step2reply.substring(0,160)}"`)
 
-  // ── Step 3 — Verify no HANDOFF fired (bot can handle it alone now) ───────
-  origLog(`\n${C.bold}── STEP 3: No unnecessary HANDOFF ──────────────────────────────${C.reset}`)
-  // In Rodrigo's real conversation, step 14 was HANDOFF because bot had no address at all.
-  // With the fix, bot has the address and doesn't need to immediately HANDOFF.
   !step2handoff
-    ? pass('No HANDOFF — bot engaged with the order (has saved address)')
-    : fail('No HANDOFF', 'bot escalated to human unnecessarily')
+    ? pass('No HANDOFF at step 2')
+    : fail('No HANDOFF at step 2', 'bot escalated before getting house number')
+
+  // ── Step 3 — Customer gives just the house number ────────────────────────
+  origLog(`\n${C.bold}── STEP 3: Customer responds with just "E27-48" ────────────────${C.reset}`)
+  const { reply: step3reply, needsHandoff: step3handoff } = await send('3/4', 'E27-48', {
+    // The supplement combination + re-geocode must fire
+    expectInLog:    ['[address-supplement] Re-geocoding combined'],
+    // Geocoding must reach Google (low-conf is acceptable for a fake test number)
+    expectNotInLog: ['[address-supplement] Geocoding failed'],
+  })
+  origLog(`${C.grey}  Full reply:\n${step3reply}${C.reset}`)
+
+  // DB: combined address should be saved (zone is set only if geocode was ROOFTOP;
+  // a fake test number like "E27-48" returns GEOMETRIC_CENTER → raw saved, zone null).
+  origLog(`\n${C.grey}  Checking DB after step 3…${C.reset}`)
+  const geo3 = await getCustomerAddress(TEST_PHONE).catch(() => null)
+  origLog(`${C.grey}  DB → address="${geo3?.address}" zone=${geo3?.zone} dist=${geo3?.distanceKm}km${C.reset}`)
+  geo3?.address?.includes('E27-48')
+    ? pass(`DB: combined address saved — "${geo3.address.substring(0, 70)}"`)
+    : fail(`DB: combined address saved`, `address is "${geo3?.address}"`)
+  origLog(`${C.grey}  (Zone ${geo3?.zone || 'not set'} — expected null for fake test number "E27-48")${C.reset}`)
+
+  // ── Step 4 — Bot should now give a concrete delivery cost ────────────────
+  origLog(`\n${C.bold}── STEP 4: Summary with real delivery cost ─────────────────────${C.reset}`)
+  const hasDeliveryCost = /\$\s*\d+[\.,]\d{2}/.test(step3reply) || /envío.*\$\d/i.test(step3reply)
+  hasDeliveryCost
+    ? pass('Reply contains concrete delivery cost after house number provided')
+    : fail('Reply contains delivery cost', `got: "${step3reply.substring(0,200)}"`)
+  !step3handoff
+    ? pass('No HANDOFF — bot resolved delivery cost autonomously')
+    : fail('No HANDOFF after supplement', 'bot still escalated for delivery cost')
 
   // ── Summary ──────────────────────────────────────────────────────────────
   console.log  = origLog
@@ -162,7 +185,7 @@ async function send(label, message, { expectInLog = [], expectNotInLog = [], exp
     origLog(`\n${C.red}${C.bold}  Failed assertions:${C.reset}`)
     failed.forEach(f => origLog(`    ${C.red}✗${C.reset} ${f.label}${f.reason ? ` — ${f.reason}` : ''}`))
   } else {
-    origLog(`\n${C.green}${C.bold}  ✅ All assertions passed! Proactive geocoding is working.${C.reset}`)
+    origLog(`\n${C.green}${C.bold}  ✅ All assertions passed! Proactive geocoding + supplement flow working.${C.reset}`)
   }
   origLog(`${C.bold}${'═'.repeat(64)}${C.reset}\n`)
   process.exit(failed.length > 0 ? 1 : 0)
