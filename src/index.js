@@ -473,21 +473,13 @@ app.post('/webhook', async (req, res) => {
     // 3-second cooldown starts when the customer can actually see the response.
     processingPhones.add(customerPhone)
 
-    // Deterministic override: weekend almuerzo ORDER → immediate HANDOFF (no Claude call needed)
+    // Deterministic override: ANY weekend almuerzo inquiry → immediate HANDOFF (no Claude call needed)
+    // Weekend almuerzo menu is not pre-programmed — a human must confirm what's available.
     const dow = new Date().getDay() // 0=Sun, 6=Sat
     const isWeekend = dow === 0 || dow === 6
     const msgLower = customerMessage.toLowerCase()
     const mentionsAlmuerzo = msgLower.includes('almuerzo') || msgLower.includes('almuerzos')
-    const mentionsOrderIntent = (
-      msgLower.includes('quiero') || msgLower.includes('pedir') || msgLower.includes('pedido') ||
-      msgLower.includes('dame') || msgLower.includes('me das') || msgLower.includes('ordenar') ||
-      msgLower.includes('domicilio') || msgLower.includes('delivery') ||
-      msgLower.includes('para el lunes') || msgLower.includes('para el martes') ||
-      msgLower.includes('para la semana') || msgLower.includes('para mañana') ||
-      /^\d+/.test(msgLower.trim()) // starts with a number e.g. "2 almuerzos"
-    )
-    // Fire HANDOFF if: mentions almuerzo + any order intent, OR if it's weekend and clear order keywords with food context
-    const isAlmuerzoOrderOnWeekend = isWeekend && mentionsAlmuerzo && mentionsOrderIntent
+    const isAlmuerzoOrderOnWeekend = isWeekend && mentionsAlmuerzo
 
     let reply, needsHandoff, needsPaymentHandoff
     if (isAlmuerzoOrderOnWeekend) {

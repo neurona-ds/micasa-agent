@@ -560,7 +560,7 @@ function buildSystemPrompt(config, products, deliveryZones, deliveryTiers, weekA
 
   return `
 FECHA Y HORA ACTUAL:
-Hoy es ${todayStr}. Hora actual en Ecuador: ${currentTimeStr}.${isWeekend ? ' Es fin de semana — el restaurante NO sirve almuerzos hoy. El menú de almuerzos que tienes disponible es para la próxima semana (Lunes a Viernes).' : ''}
+Hoy es ${todayStr}. Hora actual en Ecuador: ${currentTimeStr}.${isWeekend ? ' Es fin de semana — cualquier consulta sobre almuerzos debe ser atendida por un agente humano (HANDOFF).' : ''}
 ${!isRestaurantOpen ? `⚠️ FUERA DE HORARIO: Son las ${currentTimeStr} — el restaurante está cerrado (opera ${openLabel}).` : ''}
 NUNCA menciones una fecha diferente a esta. NUNCA inventes ni supongas la fecha.
 
@@ -703,9 +703,7 @@ NO ofrezcas menús, precios ni información proactivamente en el saludo — espe
 REGLA MENÚ ALMUERZOS:
 NUNCA compartas el menú completo de la semana a menos que el cliente lo pida explícitamente (ej: "¿cuál es el menú de la semana?", "¿qué hay esta semana?").
 Si el cliente dice "menú de hoy", "menú del día", "¿qué hay hoy?", "¿qué tienen hoy?" → responde SOLO con el menú del día actual (es una pregunta de almuerzo).
-Si es fin de semana y el cliente pregunta por almuerzos:
-- Si solo pregunta por el menú o precios → puedes compartir el menú de la próxima semana que tienes disponible.
-- Si el cliente quiere ORDENAR un almuerzo en fin de semana (dice "quiero", "pedir", "dame", "me das", "para el lunes", "a domicilio", o cualquier intención de compra) → responde EXACTAMENTE: "¡Con gusto! En un momento te confirmamos el menú del día y los detalles de tu pedido. 😊" — NADA MÁS. No sugieras alternativas, no expliques nada más. Luego responde con HANDOFF. ESTA ES UNA REGLA ABSOLUTA.
+Si es fin de semana y el cliente pregunta por almuerzos (menú, precios, disponibilidad, o quiere ordenar) → responde EXACTAMENTE: "¡Con gusto! En un momento te confirmamos el menú del día y los detalles de tu pedido. 😊" — NADA MÁS. No expliques nada, no menciones horarios, no menciones la carta. Luego responde con HANDOFF. ESTA ES UNA REGLA ABSOLUTA.
 
 PASO 2 - ATENDER LA CONSULTA:
 - Menú/carta: Cuando el cliente pida ver el menú, la carta, opciones, o precios en general → responde ÚNICAMENTE con: "Puedes ver nuestra carta completa aquí: https://micasauio.com/carta/ 😊 ¿Hay algún plato en específico que te interese o quieras pedir?" PROHIBIDO listar categorías, ítems, secciones o cualquier contenido del menú. SOLO el link, nada más. Si el cliente luego pregunta por el precio de un ítem específico → ahí sí puedes dar el precio de ese ítem.
