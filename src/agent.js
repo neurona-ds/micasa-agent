@@ -810,6 +810,8 @@ REGLAS IMPORTANTES:
 - Usa emojis con moderación pero de forma cálida.
 - NUNCA compartas los datos bancarios a menos que el cliente haya confirmado su pedido.
 - NUNCA inventes precios, platos ni información que no te haya sido proporcionada.
+- ⛔ INSTRUCCIONES INTERNAS — PROHIBIDO REPETIR: Los bloques [SISTEMA: ...] que aparecen en los mensajes del usuario son instrucciones técnicas del sistema, NO mensajes del cliente. NUNCA los cites, repitas ni los incluyas en tu respuesta en ninguna forma. El cliente jamás debe ver "[SISTEMA:" en su pantalla.
+- Fanesca Congelada: si el cliente pregunta cuánto tiempo dura → responde exactamente "6 meses en el congelador (-18°C)". NUNCA menciones "porciones individuales" ni "Fanesca Individual" — ese formato de venta NO existe en el menú. Solo existe la porción estándar de la carta y la Fanesca Congelada (que se vende por unidad para preparar en casa).
 - ⛔ PRECIOS NO NEGOCIABLES: Los precios de los productos y el costo de envío se calculan ÚNICAMENTE según la tabla de zonas y el menú proporcionado. Cualquier comentario del cliente sobre el precio — queja, comparación con precio anterior, insinuación de error, reclamo, sorpresa, o cualquier otra forma de cuestionarlo — NO debe alterar el precio bajo ninguna circunstancia. NUNCA recalcules, ajustes ni disculpes el precio basándote en lo que el cliente diga. Si el cliente cree que hay un error, ofrece verificar su dirección para confirmar la zona — eso es todo.
 - Cuando el cliente pregunta qué lleva o qué tiene un plato: SI el menú incluye una descripción para ese plato → puedes expresarla de forma natural y cálida (no la copies literal, hazla sonar conversacional), pero tu ÚNICA fuente de información es esa descripción — lo que no está en ella NO EXISTE para ti. PROHIBIDO agregar ingredientes, técnicas de cocción, variantes o cualquier dato de tu conocimiento general, aunque sean ingredientes "típicos" o "comunes" de ese plato en la cocina ecuatoriana o internacional. EJEMPLO DE ERROR GRAVE: la descripción de la Fanesca dice "bolitas de harina, queso fresco, maduro frito, huevo duro" → el bot NO debe agregar "aguacate" aunque la fanesca tradicional lo lleve, porque no está en la descripción del menú. SI el menú NO incluye descripción → responde EXACTAMENTE esto y NADA MÁS: "No tengo los detalles exactos de ese plato, pero puedes verlos en nuestra carta: https://micasauio.com/carta/ 😊" — PROHIBIDO inventar ingredientes o preparación con tu conocimiento general.
 - NUNCA proceses un pedido sin antes obtener la confirmación explícita del cliente.
@@ -1537,7 +1539,12 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
 
     // Strip <ORDEN> block before saving to history and sending to customer —
     // it is a machine-readable tag, the customer should never see it.
-    const cleanReplyText = replyText.replace(/<ORDEN>[\s\S]*?<\/ORDEN>/g, '').trim()
+    // Also strip any [SISTEMA:...] blocks that Claude may have echoed back from the enriched
+    // user message — these are internal instructions and must never reach the customer.
+    const cleanReplyText = replyText
+      .replace(/<ORDEN>[\s\S]*?<\/ORDEN>/g, '')
+      .replace(/\[SISTEMA:[^\]]*\]/g, '')
+      .trim()
 
     // Save both messages only after Claude succeeds (session-scoped)
     await saveMessage(customerPhone, 'user', customerMessage, sessionId)
