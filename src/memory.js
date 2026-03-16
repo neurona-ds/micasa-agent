@@ -191,10 +191,28 @@ async function getCurrentCycle() {
       const newCycle = (currentCycle % cycleCount) + 1
       const newDate  = thisMonday.toISOString().split('T')[0]
 
-      await supabase.from('config').upsert([
+      const { error: upsertError } = await supabase.from('config').upsert([
         { key: 'current_cycle',      value: String(newCycle) },
         { key: 'cycle_last_updated', value: newDate }
       ], { onConflict: 'key' })
+
+      if (upsertError) {
+        console.error('[cycle] Failed to save new cycle to config:', upsertError.message)
+      } else {
+        // Append to cycle_log JSON array stored in config table
+        const { data: logRow } = await supabase.from('config').select('value').eq('key', 'almuerzo_cycle_log').single()
+        const existingLog = logRow?.value ? JSON.parse(logRow.value) : []
+        existingLog.push({
+          advanced_at: new Date().toISOString(),
+          from_cycle:  currentCycle,
+          to_cycle:    newCycle,
+          week_of:     newDate
+        })
+        await supabase.from('config').upsert(
+          { key: 'almuerzo_cycle_log', value: JSON.stringify(existingLog) },
+          { onConflict: 'key' }
+        )
+      }
 
       console.log(`[cycle] AUTO-ADVANCED: C${currentCycle} → C${newCycle} (week of ${newDate})`)
       return newCycle
