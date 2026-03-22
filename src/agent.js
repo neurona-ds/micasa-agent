@@ -26,7 +26,10 @@ const houseNumberPending = new Map()
 // We use this everywhere we need "today" — using raw new Date() returns UTC
 // which is 5 hours ahead and causes wrong day-of-week after 7pm Ecuador time.
 function nowInEcuador() {
-  return new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Guayaquil' }))
+  // Ecuador is UTC-5 with no DST. Use fixed offset arithmetic instead of
+  // toLocaleString(), which is unreliable on Railway's minimal Node.js builds
+  // and returns UTC time when ICU timezone data is unavailable.
+  return new Date(Date.now() - 5 * 60 * 60 * 1000)
 }
 
 // ─── Business-hours helpers ────────────────────────────────────────────────────

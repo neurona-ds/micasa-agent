@@ -475,7 +475,7 @@ app.post('/webhook', async (req, res) => {
 
     // Deterministic override: ANY weekend almuerzo inquiry → immediate HANDOFF (no Claude call needed)
     // Weekend almuerzo menu is not pre-programmed — a human must confirm what's available.
-    const dow = new Date().getDay() // 0=Sun, 6=Sat
+    const dow = new Date(Date.now() - 5 * 60 * 60 * 1000).getDay() // Ecuador UTC-5, 0=Sun, 6=Sat
     const isWeekend = dow === 0 || dow === 6
     const msgLower = customerMessage.toLowerCase()
     const mentionsAlmuerzo = msgLower.includes('almuerzo') || msgLower.includes('almuerzos')
