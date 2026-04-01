@@ -468,6 +468,10 @@ app.post('/webhook', async (req, res) => {
     }
     // ─────────────────────────────────────────────────────────────────────────
 
+    // Wait 3 seconds before processing — gives the customer time to finish
+    // sending split messages and makes the reply feel less robotic.
+    await new Promise(r => setTimeout(r, 3000))
+
     // Mark as processing — block any concurrent webhook for this phone.
     // lastProcessed is stamped AFTER the reply is sent (see below) so the
     // 3-second cooldown starts when the customer can actually see the response.
