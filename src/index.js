@@ -154,8 +154,11 @@ app.post('/webhook', async (req, res) => {
         // resumeBot above, but we want the operator's message handling to run)
       }
 
-      // If it's the human agent email → operator assist + pause/resume logic
-      if (humanEmail && operatorEmail === humanEmail) {
+      // If it's any human agent (not the bot itself) → operator assist + pause/resume logic
+      // Accept any operatorEmail that is NOT the bot — don't restrict to a single human email
+      // so that any team member replying in WATI triggers the operator-assist.
+      const isHumanOperator = operatorEmail && operatorEmail !== botEmail
+      if (isHumanOperator) {
         if (rawText === '#resume') {
           await resumeBot(customerPhone)
           console.log(`Bot RESUMED for ${customerPhone} by human agent`)
