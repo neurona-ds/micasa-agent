@@ -330,7 +330,6 @@ app.post('/webhook', async (req, res) => {
         await sendWatiMessage(customerPhone, ackMessage)
         await notifyHandoff(customerPhone, customerName, 'PAYMENT', 'Cliente envió comprobante de pago')
         triggerZohoOnPayment(customerPhone, customerName)
-        await pauseBot(customerPhone)
       } else {
         // Follow-up image — order already processed, ignore silently
         console.log(`MEDIA follow-up (no pending order) from ${customerPhone} — ignored`)
@@ -428,10 +427,8 @@ app.post('/webhook', async (req, res) => {
         await sendWatiMessage(customerPhone, result.reply)
         if (result.needsPaymentHandoff) {
           await notifyHandoff(customerPhone, customerName, 'PAYMENT', locationMessage)
-          await pauseBot(customerPhone)
         } else if (result.needsHandoff) {
           await notifyHandoff(customerPhone, customerName, 'GENERAL', locationMessage)
-          await pauseBot(customerPhone)
         }
         lastProcessed.set(customerPhone, Date.now())
       } finally {
@@ -525,10 +522,8 @@ app.post('/webhook', async (req, res) => {
     // Handle handoff notifications
     if (needsPaymentHandoff) {
       await notifyHandoff(customerPhone, customerName, 'PAYMENT', customerMessage)
-      await pauseBot(customerPhone)
     } else if (needsHandoff) {
       await notifyHandoff(customerPhone, customerName, 'GENERAL', customerMessage)
-      await pauseBot(customerPhone)
     }
 
     // Stamp lastProcessed NOW — after the reply has been sent — so the 3-second
