@@ -137,10 +137,10 @@ function formatDeliveryZones(zones, tiers) {
 
   return zones.map(z => {
     if (z.requires_approval) {
-      return `ZONA ${z.zone_number} (6+ km) — Requiere aprobación de supervisor
+      return `ZONA ${z.zone_number} (6+ km)
   Barrios: ${z.neighborhoods}
   Pedido mínimo: $${Number(z.min_order).toFixed(2)}
-  ⚠️ Responder: "¡Claro! Permíteme un momento, estamos verificando el costo de envío para tu sector 🔍 En breve un asesor te confirma los detalles." + HANDOFF. NO pedir confirmación.`
+  ⚠️ Responder EXACTAMENTE y SOLO esto: "¡Claro! Permíteme un momento, estamos verificando el costo de envío para tu sector 🔍 En breve un asesor te confirma los detalles." + HANDOFF. NO añadir ninguna frase propia. NO pedir confirmación.`
     }
 
     const zoneTiers = tiers
@@ -212,7 +212,7 @@ function formatAlmuerzoDeliveryTiers(tiers) {
 
   return Object.entries(byZone).map(([zone, zoneTiers]) => {
     if (zoneTiers.some(t => t.requires_approval)) {
-      return `ZONA ${zone} (6+ km) — ⚠️ Responder: "¡Claro! Permíteme un momento, estamos verificando el costo de envío para tu sector 🔍 En breve un asesor te confirma los detalles." + HANDOFF. NO pedir confirmación.`
+      return `ZONA ${zone} (6+ km) — ⚠️ Responder EXACTAMENTE y SOLO esto: "¡Claro! Permíteme un momento, estamos verificando el costo de envío para tu sector 🔍 En breve un asesor te confirma los detalles." + HANDOFF. NO añadir ninguna frase propia. NO pedir confirmación.`
     }
     const lines = zoneTiers.map(t => {
       const qtyLabel = t.max_qty == null
