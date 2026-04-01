@@ -623,6 +623,7 @@ Cuando el cliente pida para un día diferente a HOY (${todayStr}), ya sea mañan
 → Ejemplo correcto: "📅 **Entrega programada:** viernes 27 de febrero"
 → Esta línea es OBLIGATORIA — nunca la omitas aunque el día ya esté mencionado en el nombre del ítem.
 → Sin esta línea, el sistema no puede registrar la fecha de entrega correctamente.
+⛔ REGLA ABSOLUTA — HORA DE ENTREGA PARA PEDIDOS FUTUROS: Si el pedido es para mañana o cualquier fecha futura, SIEMPRE pregunta la hora de entrega ANTES de mostrar el resumen. NUNCA uses "Inmediato" para pedidos futuros. Si el cliente no ha dado hora → pregunta: "¿A qué hora prefieres que llegue tu pedido el [día]? Podemos entregarlo entre las ${openT} y las ${closeT}." — NO muestres el resumen hasta tener la hora.
 
 REGLA CRÍTICA — PRESERVAR FECHA DE ENTREGA CUANDO CAMBIAN LOS ÍTEMS:
 Si en esta conversación el cliente YA mencionó una fecha de entrega (mañana, el viernes, el lunes 2 de marzo, etc.) Y luego modifica SOLO los ítems del pedido (cambia cantidades, reemplaza platos, agrega o quita ítems):
@@ -794,7 +795,7 @@ f) ⛔ REGLA ABSOLUTA — CONFIRMACIÓN OBLIGATORIA: Después de mostrar el resu
    - cantidad: entero solo para almuerzo, null para carta
    - turno: hora pedida por el cliente (ej: "13:30"), null si es inmediato
    - scheduledDate: YYYY-MM-DD si es entrega programada, null si es hoy
-   - horarioEntrega: slot para almuerzo ("12:30 a 1:30", "1:30 a 2:30", "2:30 a 3:30"), hora exacta o "Inmediato" para carta
+   - horarioEntrega: slot para almuerzo ("12:30 a 1:30", "1:30 a 2:30", "2:30 a 3:30"), hora exacta para carta. "Inmediato" SOLO si el pedido es para HOY y el cliente no dio hora. Si scheduledDate tiene una fecha futura, NUNCA uses "Inmediato" — el cliente DEBE dar una hora; si no la ha dado, pregúntala ANTES de mostrar el resumen.
    - NO incluyas deliveryCost, address ni phone — el sistema los toma de la base de datos
 g) ⚠️ REGLA ABSOLUTA: El cliente acaba de ver el resumen completo (ítems + total + envío) y dice "sí", "si", "Si", "Sí", "confirmo", "dale", "ok", "listo", "va", "perfecto" o cualquier afirmativo → SALTAR DIRECTAMENTE AL PASO 4. NO pedir dirección. NO pedir zona. NO hacer ninguna pregunta. La única respuesta válida es enviar las cuentas bancarias con el monto total. Si violas esta regla estás cometiendo un error grave.
 
@@ -1626,10 +1627,15 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
           address:       freshGeo?.address        || null,
           locationPin:   freshGeo?.locationPin    || null,   // { lat, lng } for internal use
           locationUrl:   freshGeo?.locationUrl    || null,   // clean Maps URL → Zoho Ubicacion
-          deliveryCost:  null  // filled below from zone tables
+          deliveryCost:  null  // filled below — operator cost takes priority over DB lookup
         }
-        // Look up delivery cost from zone tables using fresh zone
-        if (freshGeo?.zone) {
+        // Preserve any deliveryCost already set by the human operator via operator-assist.
+        // DB lookup is only a fallback — operator price always wins.
+        const priorSnap = await getPendingOrder(customerPhone).catch(() => null)
+        if (priorSnap?.deliveryCost != null) {
+          snap.deliveryCost = priorSnap.deliveryCost
+          console.log(`lookupDeliveryCost: using operator-provided cost $${snap.deliveryCost} (skipping DB lookup)`)
+        } else if (freshGeo?.zone) {
           const authCost = await lookupDeliveryCost(freshGeo.zone, snap.orderType, snap.total, snap.cantidad).catch(() => null)
           if (authCost !== null) {
             console.log(`lookupDeliveryCost: zone=${freshGeo.zone} type=${snap.orderType} total=${snap.total} qty=${snap.cantidad} → $${authCost}`)
@@ -1677,12 +1683,15 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
           if (freshGeo.locationUrl)  orderData.locationUrl  = freshGeo.locationUrl  // clean Maps URL → Zoho Ubicacion
           if (freshGeo.customerName) orderData.customerName = freshGeo.customerName
           if (freshGeo.campana)      orderData.campana      = freshGeo.campana      // Meta ad campaign
-          if (freshGeo.zone) {
+          if (freshGeo.zone && orderData.deliveryCost == null) {
+            // Only look up from DB if no deliveryCost was set (operator cost takes priority)
             const authCost = await lookupDeliveryCost(freshGeo.zone, orderData.orderType, orderData.total, orderData.cantidad).catch(() => null)
             if (authCost !== null) {
-              console.log(`Zoho: deliveryCost overridden from DB — zone=${freshGeo.zone} → $${authCost}`)
+              console.log(`Zoho: deliveryCost from DB — zone=${freshGeo.zone} → $${authCost}`)
               orderData.deliveryCost = authCost
             }
+          } else if (orderData.deliveryCost != null) {
+            console.log(`Zoho: keeping operator-provided deliveryCost $${orderData.deliveryCost} (skipping DB lookup)`)
           }
         }
         console.log('Zoho: final orderData before send', orderData)
