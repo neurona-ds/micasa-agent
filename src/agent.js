@@ -1665,11 +1665,17 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     }
     // ──────────────────────────────────────────────────────────────────────────
 
-    // cleanReplyText already has <ORDEN> stripped; also remove HANDOFF tokens
-    const cleanReply = cleanReplyText
-      .replace('HANDOFF_PAYMENT', '')
-      .replace('HANDOFF', '')
-      .trim()
+    // cleanReplyText already has <ORDEN> stripped; also remove HANDOFF tokens.
+    // When HANDOFF is present, truncate at the token — discard any text Claude
+    // added after it (e.g. "Mientras tanto, te ayudo...") so the customer only
+    // sees the scripted message and nothing more.
+    let cleanReply = cleanReplyText
+    if (needsPaymentHandoff) {
+      cleanReply = cleanReply.split('HANDOFF_PAYMENT')[0].trim()
+    } else if (needsHandoff) {
+      cleanReply = cleanReply.split('HANDOFF')[0].trim()
+    }
+    cleanReply = cleanReply.replace('HANDOFF_PAYMENT', '').replace('HANDOFF', '').trim()
 
     return {
       reply: cleanReply,
