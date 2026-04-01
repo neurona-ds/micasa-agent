@@ -1020,7 +1020,12 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       !/^\d{1,2}:\d{2}/.test(msgTrimmed) &&   // "12:30", "1:30 – 2:30"
       !/^turno/i.test(msgTrimmed) &&           // "turno de las..."
       // Spanish conversational verbs that never appear in addresses:
-      !/\b(quiero|ustedes|abren|cierran|pueden|puedo|tenemos|tengo|tienen|cuándo|cuando|cuánto|cuanto|están|abre|cierra|pronto|dijiste|dices|dijeron)\b/i.test(msgTrimmed)
+      !/\b(quiero|ustedes|abren|cierran|pueden|puedo|tenemos|tengo|tienen|cuándo|cuando|cuánto|cuanto|están|abre|cierra|pronto|dijiste|dices|dijeron)\b/i.test(msgTrimmed) &&
+      // Billing info exclusions — RUC numbers (13-digit), emails, and "con factura" keyword
+      // are dead giveaways that the customer is giving invoice data, not a delivery address.
+      !/\b\d{13}\b/.test(msgTrimmed) &&        // Ecuador RUC (13 digits) → billing data
+      !/@[\w.-]+\.\w+/.test(msgTrimmed) &&     // email address → billing data
+      !/con factura/i.test(msgTrimmed)          // "con factura" prefix → billing request
     )
 
     // ── Shared helper: build orderTypeNote from history ──────────────────────
