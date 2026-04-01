@@ -1394,8 +1394,22 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         : storedGeo.address
       enrichedMessage += `\n\n[SISTEMA: Este cliente indicó anteriormente la dirección de referencia: "${storedGeo.address}" — pero es una intersección o referencia sin número de casa exacto, por lo que AÚN NO se puede calcular el costo de envío. Cuando llegue el momento de confirmar la dirección de entrega, pide de forma natural el número de casa, nombre del edificio, o su ubicación de Google Maps. Ejemplo: "Para darte el costo de envío exacto, ¿nos podrías dar el número de casa o el nombre del edificio en ${shortBase}? Puedes también compartir tu ubicación de Google Maps 📍🏠" — El cliente puede responder con solo el número (ej. E2-24), con la dirección parcial (Mariana de Jesús E2-24), con la dirección completa, o con un pin/link de Maps. El sistema geocodificará automáticamente cualquier formato.]`
     } else if (storedGeo?.address) {
-      // Complete address with zone — offer it back verbatim
-      enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una dirección registrada: "${storedGeo.address}". Al momento de pedir la dirección de entrega, SIEMPRE ofrece primero esta opción preguntando: "¿Enviamos a tu dirección anterior — ${storedGeo.address} — o prefieres indicar una nueva? 📍". Si el cliente confirma, usa EXACTAMENTE esta dirección. Si da una nueva, úsala y descarta la registrada.]`
+      // Complete address with zone — offer it back verbatim, and inject zone + cost
+      // so Claude never has to guess the delivery price.
+      const addrZone = storedGeo.zone || null
+      let addrCostInstruction = ''
+      if (addrZone === 4 || addrZone === '4') {
+        addrCostInstruction = ` ⛔ ZONA 4: si el cliente confirma esta dirección, responde EXACTAMENTE: "¡Claro! Permíteme un momento, estamos verificando el costo de envío para tu sector 🔍 En breve un asesor te confirma los detalles." y luego escribe HANDOFF. NUNCA indiques un precio de envío.`
+      } else if (addrZone) {
+        const pendingForAddr = await getPendingOrder(customerPhone).catch(() => null)
+        const addrCost = await lookupDeliveryCost(addrZone, detectOrderTypeFromHistory(history), pendingForAddr?.total || null, pendingForAddr?.cantidad || null).catch(() => null)
+        if (addrCost !== null) {
+          addrCostInstruction = ` Zona interna: ${addrZone} (NO mencionar al cliente). El costo de envío exacto según la base de datos es $${addrCost.toFixed(2)} — usa ESTE número exactamente, no calcules por tu cuenta.`
+        } else {
+          addrCostInstruction = ` Zona interna: ${addrZone} (NO mencionar al cliente). El costo de envío exacto no está disponible aún — usa las tablas de tarifas para zona ${addrZone}.`
+        }
+      }
+      enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una dirección registrada: "${storedGeo.address}".${addrCostInstruction} Al momento de pedir la dirección de entrega, SIEMPRE ofrece primero esta opción preguntando: "¿Enviamos a tu dirección anterior — ${storedGeo.address} — o prefieres indicar una nueva? 📍". Si el cliente confirma, usa EXACTAMENTE esta dirección. Si da una nueva, úsala y descarta la registrada.]`
     } else if (storedGeo?.locationPin) {
       // Customer previously shared a location pin.
       // Use the clean Maps URL stored in last_location_url — always built from real coords,
@@ -1426,8 +1440,22 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         }
       }
 
-      const zoneInfo = pinZone ? ` Zona interna: ${pinZone} (NO mencionar al cliente).` : ''
-      enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una ubicación guardada de una sesión anterior: "${pinLabel}".${zoneInfo} Si el cliente YA mencionó una dirección o sector en este mensaje, usa esa información directamente — NO preguntes por la guardada. Solo ofrece la guardada si el cliente NO ha mencionado ninguna ubicación: "¿Enviamos a tu ubicación guardada — ${pinLabel} — o prefieres indicar una nueva? 📍". Si confirma la guardada: cotiza usando zona${pinZone ? ` ${pinZone}` : ''} y en el resumen escribe "📍 ${pinLabel}". Si da nueva dirección: procesa normalmente.]`
+      // Build cost instruction: zone 4 → always HANDOFF, other zones → inject real DB cost.
+      // Never tell Claude to "cotiza" on its own — it will hallucinate.
+      let pinCostInstruction = ''
+      if (pinZone === 4 || pinZone === '4') {
+        pinCostInstruction = ` ⛔ ZONA 4: si el cliente confirma esta ubicación, responde EXACTAMENTE: "¡Claro! Permíteme un momento, estamos verificando el costo de envío para tu sector 🔍 En breve un asesor te confirma los detalles." y luego escribe HANDOFF. NUNCA indiques un precio de envío.`
+      } else if (pinZone) {
+        const pendingForPin = await getPendingOrder(customerPhone).catch(() => null)
+        const pinCost = await lookupDeliveryCost(pinZone, detectOrderTypeFromHistory(history), pendingForPin?.total || null, pendingForPin?.cantidad || null).catch(() => null)
+        if (pinCost !== null) {
+          pinCostInstruction = ` Zona interna: ${pinZone} (NO mencionar al cliente). El costo de envío exacto según la base de datos es $${pinCost.toFixed(2)} — usa ESTE número exactamente, no calcules por tu cuenta.`
+        } else {
+          pinCostInstruction = ` Zona interna: ${pinZone} (NO mencionar al cliente). El costo de envío exacto no está disponible aún — usa las tablas de tarifas para zona ${pinZone}.`
+        }
+      }
+
+      enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una ubicación guardada de una sesión anterior: "${pinLabel}".${pinCostInstruction} Si el cliente YA mencionó una dirección o sector en este mensaje, usa esa información directamente — NO preguntes por la guardada. Solo ofrece la guardada si el cliente NO ha mencionado ninguna ubicación: "¿Enviamos a tu ubicación guardada — ${pinLabel} — o prefieres indicar una nueva? 📍". Si confirma la guardada: usa el costo indicado arriba y en el resumen escribe "📍 ${pinLabel}". Si da nueva dirección: procesa normalmente.]`
     }
 
     // Inject [SISTEMA] after-hours tag directly into the user message so Claude sees
