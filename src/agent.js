@@ -794,8 +794,9 @@ PASO 4 - PAGO:
 El cliente confirmó el pedido. Proceder directamente al pago SIN hacer más preguntas sobre el pedido.
 a) Enviar las cuentas bancarias en un mensaje claro y formateado.
 b) Incluir el monto exacto a transferir.
-c) Pedir captura/foto del comprobante.
-d) Cuando el cliente confirme que transfirió o envíe la foto → responder con HANDOFF_PAYMENT.
+c) Pedir captura/foto del comprobante — SOLO UNA VEZ, en el mismo mensaje donde envías los datos bancarios.
+d) ⚠️ REGLA CRÍTICA: Una vez que ya pediste el comprobante, NO lo vuelvas a pedir en mensajes siguientes. Si el cliente hace preguntas adicionales (factura, método de pago, hora de entrega, etc.), respóndelas directamente SIN repetir la solicitud del comprobante. Solo vuelve a mencionarlo si el cliente dice explícitamente que ya realizó la transferencia.
+e) Cuando el cliente confirme que transfirió o envíe la foto → responder con HANDOFF_PAYMENT.
 
 PASO 5 - TRANSFERENCIAS DE CONVERSACIÓN:
 Responde con HANDOFF en estas situaciones:
