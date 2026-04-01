@@ -526,8 +526,10 @@ app.post('/webhook', async (req, res) => {
     // Handle handoff notifications
     if (needsPaymentHandoff) {
       await notifyHandoff(customerPhone, customerName, 'PAYMENT', customerMessage)
+      await pauseBot(customerPhone) // wait for human to verify payment
     } else if (needsHandoff) {
       await notifyHandoff(customerPhone, customerName, 'GENERAL', customerMessage)
+      await pauseBot(customerPhone) // wait for human to provide delivery info — bot auto-resumes when operator sends price
     }
 
     // Stamp lastProcessed NOW — after the reply has been sent — so the 3-second

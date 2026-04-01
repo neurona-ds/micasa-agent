@@ -1414,7 +1414,7 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       }
 
       const zoneInfo = pinZone ? ` Zona interna: ${pinZone} (NO mencionar al cliente).` : ''
-      enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una ubicación guardada de una sesión anterior: "${pinLabel}".${zoneInfo} Al pedir la dirección de entrega pregunta EXACTAMENTE: "¿Enviamos a tu ubicación guardada — ${pinLabel} — o prefieres indicar una nueva? 📍" — Si confirma: cotiza el envío usando la zona ya calculada${pinZone ? ` (Zona ${pinZone})` : ''} y en el resumen escribe "📍 ${pinLabel}". Si da nueva dirección: procesa normalmente.]`
+      enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una ubicación guardada de una sesión anterior: "${pinLabel}".${zoneInfo} Si el cliente YA mencionó una dirección o sector en este mensaje, usa esa información directamente — NO preguntes por la guardada. Solo ofrece la guardada si el cliente NO ha mencionado ninguna ubicación: "¿Enviamos a tu ubicación guardada — ${pinLabel} — o prefieres indicar una nueva? 📍". Si confirma la guardada: cotiza usando zona${pinZone ? ` ${pinZone}` : ''} y en el resumen escribe "📍 ${pinLabel}". Si da nueva dirección: procesa normalmente.]`
     }
 
     // Inject [SISTEMA] after-hours tag directly into the user message so Claude sees
