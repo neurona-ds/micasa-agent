@@ -114,8 +114,9 @@ app.post('/webhook', async (req, res) => {
     // with eventType:"message" — those were causing unsolicited bot replies.
 
     const eventType = (body.eventType || '').toLowerCase()
-    if (eventType !== 'message') {
+    if (eventType !== 'message' && eventType !== 'sessionmessagesent_v2') {
       // Catches: empty string, "sentMessageStatus", "delivery", "read", etc.
+      // sessionmessagesent_v2 = human operator sent a message — needed for operator-assist.
       console.log(`Ignoring non-message event: eventType="${eventType}"`)
       return res.status(200).json({ status: 'ignored_event_type' })
     }
