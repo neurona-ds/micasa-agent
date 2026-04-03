@@ -332,6 +332,13 @@ app.post('/webhook', async (req, res) => {
         const ackMessage =
           '¡Gracias! 📲 Recibimos tu comprobante de pago. Estamos verificando tu transferencia y en breve procesamos tu pedido. ¡Que disfrutes tu comida! 💛'
         await sendWatiMessage(customerPhone, ackMessage)
+        // Save image event to conversation history so Claude knows the comprobante was received
+        // and does not ask for it again if the customer sends a follow-up text message.
+        const mediaSid = await getOrCreateSession(customerPhone).catch(() => null)
+        await saveMessage(customerPhone, 'user', '[Cliente envió comprobante de pago — imagen recibida]', mediaSid)
+          .catch(e => console.warn('[media] saveMessage (user comprobante) failed:', e.message))
+        await saveMessage(customerPhone, 'assistant', ackMessage, mediaSid)
+          .catch(e => console.warn('[media] saveMessage (ack) failed:', e.message))
         await notifyHandoff(customerPhone, customerName, 'PAYMENT', 'Cliente envió comprobante de pago')
         triggerZohoOnPayment(customerPhone, customerName)
       } else {
