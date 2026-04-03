@@ -573,7 +573,7 @@ Eres profesional, empático y resolutivo.
 Usas un tono cercano pero sin exagerar — como alguien del equipo, no como un bot corporativo.
 Evita respuestas largas. Ve al punto con calidez.
 Nunca uses frases genéricas de call center como "con mucho gusto", "claro que sí", "por supuesto".
-NUNCA uses el emoji 😊 — está prohibido en todas tus respuestas.
+⛔ ABSOLUTAMENTE PROHIBIDO usar el emoji 😊 en cualquier mensaje. Ni en saludos, ni en respuestas, ni al final de una frase. Nunca. Si lo usas, es un error grave. Usa otros emojis si necesitas calidez (👋 🙌 🍲 💛 ✅ 🚗 📍) pero JAMÁS 😊.
 Si el cliente pregunta directamente si eres una IA, sé honesto — no te hagas pasar por humano, pero informa que el equipo de Micasa está activamente monitoreando los mensajes y puede responder en cualquier momento.
 
 ⛔ REGLA ABSOLUTA — IDENTIDAD TÉCNICA:
@@ -1002,18 +1002,28 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     // Require BOTH "dirección completa" AND "📍" — this is the exact phrase the bot uses
     // when asking for the address. A lone 📍 in a greeting/menu message won't match.
     const lastBotMsg = [...history].reverse().find(h => h.role === 'assistant')
-    const lastBotAskedAddress = lastBotMsg && (
-      // Bot asked for the address — must reference "dirección" and the 📍 icon.
-      // IMPORTANT: exclude order summaries, which also mention "dirección" + 📍
-      // but are confirming the address, not requesting it.
-      /direcci[oó]n/i.test(lastBotMsg.message) &&
-      lastBotMsg.message.includes('📍') &&
-      !lastBotMsg.message.includes('¿Confirmas tu pedido?') &&
-      !lastBotMsg.message.includes('TOTAL:') &&
-      !lastBotMsg.message.includes('Subtotal:') &&
-      !lastBotMsg.message.includes('Tengo tu dirección') &&
-      !lastBotMsg.message.includes('RESUMEN')
-    )
+    // lastBotAskedAddress: true ONLY when the bot was explicitly ASKING for the customer's address.
+    // Strategy: the message must contain BOTH a "dirección" reference AND a question mark nearby —
+    // indicating a request, not a confirmation. Confirmatory messages ("Tengo tu dirección en X 📍")
+    // also contain "dirección" + 📍 but are NOT requests — they confirm what was already given.
+    // Use a strict pattern: "?" must appear within 120 characters of "dirección/ubicación".
+    const lastBotAskedAddress = lastBotMsg && (() => {
+      const m = lastBotMsg.message
+      // Must reference address/location at all
+      if (!/direcci[oó]n|ubicaci[oó]n/i.test(m)) return false
+      // Must NOT be an order summary or address-confirmed message
+      if (
+        /¿Confirmas tu pedido\?/i.test(m) ||
+        /TOTAL:|Subtotal:|RESUMEN/i.test(m) ||
+        /tengo tu direcci[oó]n|tu direcci[oó]n anterior|direcci[oó]n registrada|enviamos a tu direcci[oó]n/i.test(m) ||
+        /Recibí tu ubicaci[oó]n|recibí tu direcci[oó]n/i.test(m)
+      ) return false
+      // Must actually be asking a question about the address
+      // (a "?" must appear within 120 characters of a dirección/ubicación mention)
+      const addrIdx = m.search(/direcci[oó]n|ubicaci[oó]n/i)
+      const window = m.substring(Math.max(0, addrIdx - 60), addrIdx + 120)
+      return window.includes('?')
+    })()
 
     // Bug 1 fix: detect when the PREVIOUS turn asked for clarification after low-confidence geocode.
     // We use an in-process Map flag (geocodeClarificationPending) set when isLowConfidence fires,
@@ -1172,6 +1182,23 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         const isLowConfidence = ['GEOMETRIC_CENTER', 'APPROXIMATE'].includes(zoneResult.locationType)
 
         if (isLowConfidence) {
+          // If we already have a reliable zone from a location pin, use it instead of asking
+          // for clarification — the pin gave us precise coordinates, the text address is just
+          // the human-readable label. No need to ask again.
+          const pinZone = storedGeo?.zone || null
+          if (pinZone && pinZone !== 4 && pinZone !== '4') {
+            console.log(`Low-confidence geocode but pin zone ${pinZone} already known — using pin zone, saving text as address`)
+            const orderType = detectOrderTypeFromHistory(history)
+            const qty       = detectAlmuerzoQty(history)
+            const authCost  = await lookupDeliveryCost(pinZone, orderType, null, orderType === 'almuerzo' ? qty : null).catch(() => null)
+            const costStr   = authCost !== null ? ` El costo de envío exacto es $${authCost.toFixed(2)} — usa ESTE número exactamente.` : ''
+            const orderTypeNote = buildOrderTypeNote()
+            enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección del cliente → "${customerMessage.trim()}" | Zona ${pinZone} confirmada por pin de ubicación previo.${costStr} ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido escribe la dirección así: "📍 ${customerMessage.trim()}"]`
+            saveDeliveryAddress(customerPhone, customerMessage.trim(), pinZone, zoneResult.distanceKm).catch(err =>
+              console.warn('saveDeliveryAddress (pin-fallback) failed:', err.message)
+            )
+            console.log(`Zone injected (pin fallback): Zone ${pinZone} for text address "${customerMessage.trim()}"`)
+          } else {
           console.warn(`Low-confidence geocode: "${customerMessage}" → "${formattedAddress}" — asking for clarification`)
           enrichedMessage = `${customerMessage}\n\n[SISTEMA: La dirección proporcionada no pudo geocodificarse con precisión (resultado: "${formattedAddress}"). No calcules zona todavía. Pide al cliente una referencia más específica: calle principal, intersección o barrio. Ejemplo: "¿Me podrías dar la calle principal o una referencia cercana, como un parque o edificio conocido? 📍"]`
           // Save the raw text so pending_order.address is never null even when geocoding fails
@@ -1181,6 +1208,7 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
           // Flag: next message from this customer is a clarification reference → re-geocode it
           geocodeClarificationPending.set(customerPhone, true)
           console.log(`[geocode] Clarification pending set for ${customerPhone}`)
+          } // end if pinZone fallback
         } else {
           // Look up the exact delivery cost from the DB so Claude doesn't have to calculate it.
           // This prevents Claude from inventing wrong prices (e.g. $3.50 when DB says $3).
@@ -1223,7 +1251,13 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         /^(confirmo|si confirmo|sí confirmo|confirmar|confirmado|confirma)/i.test(msgTrimmed) ||
         /\b(pedido|orden|mi pedido|mi orden)\b/i.test(msgTrimmed) ||
         /\b(imagen|foto|fotos|picture|photo)\b/i.test(msgTrimmed) ||
-        /\b(quiero|tienes|tiene|puedo|pueden|cuánto|cuanto)\b/i.test(msgTrimmed)
+        /\b(quiero|tienes|tiene|puedo|pueden|cuánto|cuanto|cuándo|cuando)\b/i.test(msgTrimmed) ||
+        // Time/delivery questions — "en qué tiempo", "cuánto demora", "cuándo llega", etc.
+        /\b(tiempo|demora|tarda|llega|llegará|minutos|horas|rápido|rapido)\b/i.test(msgTrimmed) ||
+        // Messages starting with "Si" as "if/yes" followed by a question word or verb
+        /^si\s+(en|cuándo|cuando|hay|tienen|puedo|puede)\b/i.test(msgTrimmed) ||
+        // Generic question starters that clearly are not addresses
+        /^(en qué|en que|por qué|por que|cómo|como es|qué tan|que tan)\b/i.test(msgTrimmed)
 
       if (isNonAddressReply) {
         console.log(`Clarification flag was set but message looks like non-address reply — skipping geocode: "${customerMessage}"`)
