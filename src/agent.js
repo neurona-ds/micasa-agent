@@ -1003,8 +1003,16 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     // when asking for the address. A lone 📍 in a greeting/menu message won't match.
     const lastBotMsg = [...history].reverse().find(h => h.role === 'assistant')
     const lastBotAskedAddress = lastBotMsg && (
-      lastBotMsg.message.includes('dirección completa') &&
-      lastBotMsg.message.includes('📍')
+      // Bot asked for the address — must reference "dirección" and the 📍 icon.
+      // IMPORTANT: exclude order summaries, which also mention "dirección" + 📍
+      // but are confirming the address, not requesting it.
+      /direcci[oó]n/i.test(lastBotMsg.message) &&
+      lastBotMsg.message.includes('📍') &&
+      !lastBotMsg.message.includes('¿Confirmas tu pedido?') &&
+      !lastBotMsg.message.includes('TOTAL:') &&
+      !lastBotMsg.message.includes('Subtotal:') &&
+      !lastBotMsg.message.includes('Tengo tu dirección') &&
+      !lastBotMsg.message.includes('RESUMEN')
     )
 
     // Bug 1 fix: detect when the PREVIOUS turn asked for clarification after low-confidence geocode.
@@ -1032,8 +1040,10 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       !/^(domicilio|delivery|retiro|local|si|sí|no|ok|dale|listo|claro|perfecto|turno|quiero|para)$/i.test(msgTrimmed) &&
       !/^\d{1,2}:\d{2}/.test(msgTrimmed) &&   // "12:30", "1:30 – 2:30"
       !/^turno/i.test(msgTrimmed) &&           // "turno de las..."
-      // Spanish conversational verbs that never appear in addresses:
-      !/\b(quiero|ustedes|abren|cierran|pueden|puedo|tenemos|tengo|tienen|cuándo|cuando|cuánto|cuanto|están|abre|cierra|pronto|dijiste|dices|dijeron)\b/i.test(msgTrimmed) &&
+      // Spanish conversational verbs / menu-query words that never appear in addresses:
+      !/\b(quiero|ustedes|abren|cierran|pueden|puedo|tenemos|tengo|tienen|tienes|tiene|cuándo|cuando|cuánto|cuanto|están|abre|cierra|pronto|dijiste|dices|dijeron|ofrece|ofrecen|venden|vende|incluye|cuesta|vale|muestras|muestra|envías|envía|mandas|manda|imagen|imágenes|foto|fotos|picture|photo)\b/i.test(msgTrimmed) &&
+      // "Por favor" followed by a verb = question/request, not an address
+      !/^por favor\s+\w*(as?|es?|ís?)\b/i.test(msgTrimmed) &&
       // Billing info exclusions — RUC numbers (13-digit), emails, and "con factura" keyword
       // are dead giveaways that the customer is giving invoice data, not a delivery address.
       !/\b\d{13}\b/.test(msgTrimmed) &&        // Ecuador RUC (13 digits) → billing data
@@ -1172,7 +1182,22 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
           geocodeClarificationPending.set(customerPhone, true)
           console.log(`[geocode] Clarification pending set for ${customerPhone}`)
         } else {
-          enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección del cliente → "${customerMessage.trim()}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido escribe la dirección así: "📍 ${customerMessage.trim()}"]`
+          // Look up the exact delivery cost from the DB so Claude doesn't have to calculate it.
+          // This prevents Claude from inventing wrong prices (e.g. $3.50 when DB says $3).
+          const orderType = detectOrderTypeFromHistory(history)
+          const qty       = detectAlmuerzoQty(history)
+          let costInstruction = ''
+          if (zone === 4 || zone === '4') {
+            costInstruction = ` ⛔ ZONA 4: responde EXACTAMENTE: "¡Claro! Permíteme un momento, estamos verificando el costo de envío para tu sector 🔍 En breve un asesor te confirma los detalles." y luego escribe HANDOFF.`
+          } else {
+            const authCost = await lookupDeliveryCost(zone, orderType, null, orderType === 'almuerzo' ? qty : null)
+              .catch(() => null)
+            if (authCost !== null) {
+              costInstruction = ` El costo de envío exacto es $${authCost.toFixed(2)} — usa ESTE número exactamente, NO calcules ni estimes otro valor.`
+              console.log(`Zone injected with cost: Zone ${zone} → $${authCost}`)
+            }
+          }
+          enrichedMessage = `${customerMessage}\n\n[SISTEMA: Dirección del cliente → "${customerMessage.trim()}" | Distancia: ${distanceKm}km → Zona ${zone}.${costInstruction} ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido escribe la dirección así: "📍 ${customerMessage.trim()}"]`
           console.log(`Zone injected: Zone ${zone} (${distanceKm}km)`)
           saveDeliveryAddress(customerPhone, customerMessage.trim(), zone, distanceKm).catch(err =>
             console.warn('saveDeliveryAddress failed (non-blocking):', err.message)
@@ -1186,12 +1211,27 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         )
       }
     } else if (lastBotAskedClarification && msgTrimmed.length >= 10) {
-      // ── Bug 1 fix: Re-geocode reference message after low-confidence clarification ──
+      // ── Re-geocode reference message after low-confidence clarification ──
       // Customer gave a reference like "Cercano a Los Pinos y Galo Plaza Lasso" after
       // the bot asked for a more specific address. Try geocoding this reference text.
-      console.log(`Clarification reference detected — re-geocoding: "${customerMessage}"`)
       // Clear the flag regardless of outcome — don't loop indefinitely
       geocodeClarificationPending.delete(customerPhone)
+
+      // Guard: skip re-geocode if the message is clearly a confirmation or non-address reply.
+      // "Confirmo pedido", "Sí confirmo", "Dale", "Ok" etc. must NOT be geocoded.
+      const isNonAddressReply = isSimpleConversation ||
+        /^(confirmo|si confirmo|sí confirmo|confirmar|confirmado|confirma)/i.test(msgTrimmed) ||
+        /\b(pedido|orden|mi pedido|mi orden)\b/i.test(msgTrimmed) ||
+        /\b(imagen|foto|fotos|picture|photo)\b/i.test(msgTrimmed) ||
+        /\b(quiero|tienes|tiene|puedo|pueden|cuánto|cuanto)\b/i.test(msgTrimmed)
+
+      if (isNonAddressReply) {
+        console.log(`Clarification flag was set but message looks like non-address reply — skipping geocode: "${customerMessage}"`)
+        // Fall through to Claude normally
+      } else {
+
+      console.log(`Clarification reference detected — re-geocoding: "${customerMessage}"`)
+      // (flag already cleared above)
 
       const zoneResult = await getDeliveryZoneByAddress(customerMessage)
 
@@ -1199,10 +1239,22 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         const isStillLowConfidence = ['GEOMETRIC_CENTER', 'APPROXIMATE'].includes(zoneResult.locationType)
 
         if (!isStillLowConfidence) {
-          // Good geocode — inject zone normally
+          // Good geocode — inject zone + exact cost
           const { zone, distanceKm, formattedAddress } = zoneResult
           const orderTypeNote = buildOrderTypeNote()
-          enrichedMessage = `${customerMessage}\n\n[SISTEMA: Referencia del cliente → "${customerMessage.trim()}" | Distancia: ${distanceKm}km → Zona ${zone}. ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido escribe la dirección así: "📍 ${customerMessage.trim()}"]`
+          const orderType2 = detectOrderTypeFromHistory(history)
+          const qty2       = detectAlmuerzoQty(history)
+          let clarCostInstruction = ''
+          if (zone === 4 || zone === '4') {
+            clarCostInstruction = ` ⛔ ZONA 4: responde EXACTAMENTE: "¡Claro! Permíteme un momento, estamos verificando el costo de envío para tu sector 🔍 En breve un asesor te confirma los detalles." y luego escribe HANDOFF.`
+          } else {
+            const clarCost = await lookupDeliveryCost(zone, orderType2, null, orderType2 === 'almuerzo' ? qty2 : null)
+              .catch(() => null)
+            if (clarCost !== null) {
+              clarCostInstruction = ` El costo de envío exacto es $${clarCost.toFixed(2)} — usa ESTE número exactamente.`
+            }
+          }
+          enrichedMessage = `${customerMessage}\n\n[SISTEMA: Referencia del cliente → "${customerMessage.trim()}" | Distancia: ${distanceKm}km → Zona ${zone}.${clarCostInstruction} ${orderTypeNote} NO mencionar zona al cliente. En el resumen del pedido escribe la dirección así: "📍 ${customerMessage.trim()}"]`
           console.log(`Clarification zone injected: Zone ${zone} (${distanceKm}km)`)
           saveDeliveryAddress(customerPhone, customerMessage.trim(), zone, distanceKm).catch(err =>
             console.warn('saveDeliveryAddress (clarification) failed:', err.message)
@@ -1223,6 +1275,7 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         )
         enrichedMessage = `${customerMessage}\n\n[SISTEMA: ⚠️ ZONA NO CONFIRMADA — No se pudo determinar la ubicación del cliente. NUNCA incluyas costo de envío en el resumen. Indica al cliente que un administrador confirmará el costo de envío. Usa HANDOFF para que un humano resuelva la zona y el precio de envío.]`
       }
+      } // end else (not isNonAddressReply)
     } else if (lastBotAskedHouseNumber && storedAddressNoZone && !isSimpleConversation) {
       // ── House-number reply: bot asked for number/building, handle ALL reply forms ──────
       // Customer may reply with:
