@@ -1003,26 +1003,30 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     // when asking for the address. A lone 📍 in a greeting/menu message won't match.
     const lastBotMsg = [...history].reverse().find(h => h.role === 'assistant')
     // lastBotAskedAddress: true ONLY when the bot was explicitly ASKING for the customer's address.
-    // Strategy: the message must contain BOTH a "dirección" reference AND a question mark nearby —
-    // indicating a request, not a confirmation. Confirmatory messages ("Tengo tu dirección en X 📍")
-    // also contain "dirección" + 📍 but are NOT requests — they confirm what was already given.
-    // Use a strict pattern: "?" must appear within 120 characters of "dirección/ubicación".
+    // Strategy: the message must contain a "dirección/ubicación" reference AND a "?" must appear
+    // within 120 characters of that reference — indicating a request, not a confirmation.
+    // Pure confirmations like "Tengo tu dirección en X 📍" have no "?" near "dirección".
+    // The "stored address offer" ("¿enviamos a tu dirección anterior... o prefieres indicar una nueva?")
+    // IS an address request and correctly passes the window check because it contains "?".
     const lastBotAskedAddress = lastBotMsg && (() => {
       const m = lastBotMsg.message
       // Must reference address/location at all
       if (!/direcci[oó]n|ubicaci[oó]n/i.test(m)) return false
-      // Must NOT be an order summary or address-confirmed message
+      // Must NOT be an order summary
       if (
         /¿Confirmas tu pedido\?/i.test(m) ||
-        /TOTAL:|Subtotal:|RESUMEN/i.test(m) ||
-        /tengo tu direcci[oó]n|tu direcci[oó]n anterior|direcci[oó]n registrada|enviamos a tu direcci[oó]n/i.test(m) ||
-        /Recibí tu ubicaci[oó]n|recibí tu direcci[oó]n/i.test(m)
+        /TOTAL:|Subtotal:|RESUMEN/i.test(m)
       ) return false
-      // Must actually be asking a question about the address
-      // (a "?" must appear within 120 characters of a dirección/ubicación mention)
+      // Purely confirmatory phrases: "Tengo tu dirección en X 📍" — bot just confirmed the address,
+      // no question follows. Excluded explicitly. The window check below also catches this
+      // (no "?" near "dirección") but the explicit check is a safety net.
+      // NOTE: do NOT exclude "Recibí tu ubicación 📍 ¿Podrías..." — that IS an address request.
+      if (/tengo tu direcci[oó]n\s+(en|completa:|:)/i.test(m)) return false
+      // Must actually be asking a question about the address.
+      // Scan a window of 120 chars after (and 60 before) the first dirección/ubicación mention.
       const addrIdx = m.search(/direcci[oó]n|ubicaci[oó]n/i)
-      const window = m.substring(Math.max(0, addrIdx - 60), addrIdx + 120)
-      return window.includes('?')
+      const win = m.substring(Math.max(0, addrIdx - 60), addrIdx + 200)
+      return win.includes('?')
     })()
 
     // Bug 1 fix: detect when the PREVIOUS turn asked for clarification after low-confidence geocode.
