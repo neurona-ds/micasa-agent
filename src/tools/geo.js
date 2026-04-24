@@ -18,7 +18,7 @@ const { detectOrderTypeFromHistory, detectAlmuerzoQty } = require('./order')
 const GEOCODING_TOOLS = [
   {
     name: 'geocode_address',
-    description: 'Geocode a customer delivery address to get the delivery zone and exact cost. Call this whenever the customer provides a delivery address (street name, intersection, landmark, or any text describing their location). Also call this when the customer confirms their previously stored address.',
+    description: 'Geocode a customer delivery address to get the delivery zone and exact cost. Call this whenever the customer provides a delivery address. IMPORTANT: (1) Before calling, extract only the address from the customer message — fix spelling mistakes, normalize street names, and strip any non-address text (e.g. "no tengo la ubicación", "calcula ahora", "por favor"). (2) If the result returns lowConfidence: true and the address includes a house number, call this tool again with ONLY the street intersection — for example if "Guanguiltagua N34-401 y Federico Paez" fails, retry with "Guanguiltagua y Federico Paez". Google Maps finds intersections more reliably than specific house numbers.',
     input_schema: {
       type: 'object',
       properties: {
@@ -68,14 +68,17 @@ async function executeGeoTool(toolName, input, context) {
       return { success: false, error: 'Could not geocode this address. Ask the customer for a more specific reference (cross street, landmark, or Google Maps pin).' }
     }
 
+    console.log(`[tool:geocode_address] Raw result: locationType=${result.locationType} zone=${result.zone} dist=${result.distanceKm}km formattedAddress="${result.formattedAddress}"`)
+
     const isLowConfidence = ['GEOMETRIC_CENTER', 'APPROXIMATE'].includes(result.locationType)
     if (isLowConfidence) {
+      console.warn(`[tool:geocode_address] Low confidence — locationType=${result.locationType} for input "${address}" → resolved to "${result.formattedAddress}"`)
       saveRawAddress(phone, address).catch(() => {})
       return {
         success: false,
         lowConfidence: true,
         formattedAddress: result.formattedAddress,
-        error: `Address "${result.formattedAddress}" is not precise enough to calculate delivery cost. Ask the customer for the house number, building name, or a Google Maps pin.`
+        error: `Address "${result.formattedAddress}" is not precise enough. If the address contains a house number (e.g. N34-401), call geocode_address again with ONLY the street intersection (e.g. "Guanguiltagua y Federico Paez"). Otherwise ask the customer for a Google Maps pin.`
       }
     }
 
