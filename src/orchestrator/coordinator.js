@@ -617,8 +617,7 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
           cache_control: { type: 'ephemeral' }
         }
       ],
-      messages,
-      betas: ['prompt-caching-2024-07-31']
+      messages
     })
 
     console.log(
