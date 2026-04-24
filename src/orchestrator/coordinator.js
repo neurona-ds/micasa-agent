@@ -659,8 +659,8 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     // ── Persist order snapshot from <ORDEN> JSON block ────────────────────────
     // Claude emits a hidden <ORDEN>{...}</ORDEN> block in every order summary.
     // We parse it as JSON (reliable) instead of regex-scanning free text (fragile).
-    // DB fields (address, locationPin, customerName, deliveryCost) are added here
-    // from authoritative sources — Claude's JSON only covers conversation data.
+    // address and deliveryCost come from Claude's JSON (match what customer saw in summary).
+    // locationPin, locationUrl, customerName still come from DB (authoritative geocoded data).
     const ordenMatch = replyText.match(/<ORDEN>([\s\S]*?)<\/ORDEN>/)
     if (ordenMatch) {
       try {
@@ -683,18 +683,23 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
           horarioEntrega:claudeSnap.horarioEntrega || null,
           fechaEnvio:    claudeSnap.scheduledDate
                          || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Guayaquil' }),
-          // Authoritative DB fields — always from fresh DB read, never from Claude's text
-          address:       freshGeo?.address        || null,
+          // Address: prefer Claude's parsed address (matches what customer saw in summary).
+          // Fall back to DB address for legacy orders that predate this field in <ORDEN>.
+          address:       claudeSnap.address       || freshGeo?.address        || null,
           locationPin:   freshGeo?.locationPin    || null,   // { lat, lng } for internal use
           locationUrl:   freshGeo?.locationUrl    || null,   // clean Maps URL → Zoho Ubicacion
-          deliveryCost:  null  // filled below — operator cost takes priority over DB lookup
+          deliveryCost:  null  // filled below
         }
-        // Preserve any deliveryCost already set by the human operator via operator-assist.
-        // DB lookup is only a fallback — operator price always wins.
+        // Priority: operator-provided cost > Claude's cost from summary > DB zone lookup.
+        // Claude's cost is authoritative for the address the customer confirmed — the DB zone
+        // may still point to a previous address if the customer changed delivery location.
         const priorSnap = await getPendingOrder(customerPhone).catch(() => null)
         if (priorSnap?.deliveryCost != null) {
           snap.deliveryCost = priorSnap.deliveryCost
           console.log(`lookupDeliveryCost: using operator-provided cost $${snap.deliveryCost} (skipping DB lookup)`)
+        } else if (claudeSnap.deliveryCost != null) {
+          snap.deliveryCost = claudeSnap.deliveryCost
+          console.log(`lookupDeliveryCost: using Claude summary cost $${snap.deliveryCost}`)
         } else if (freshGeo?.zone) {
           const authCost = await lookupDeliveryCost(freshGeo.zone, snap.orderType, snap.total, snap.cantidad).catch(() => null)
           if (authCost !== null) {
@@ -738,7 +743,9 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       if (orderData) {
         const freshGeo = await getCustomerAddress(customerPhone).catch(() => null)
         if (freshGeo) {
-          if (freshGeo.address)      orderData.address      = freshGeo.address
+          // Address: trust pending_order (Claude's address from the summary shown to customer).
+          // Only fall back to DB address if Claude didn't include one (e.g. legacy orders).
+          if (!orderData.address && freshGeo.address) orderData.address = freshGeo.address
           if (freshGeo.locationPin)  orderData.locationPin  = freshGeo.locationPin  // { lat, lng }
           if (freshGeo.locationUrl)  orderData.locationUrl  = freshGeo.locationUrl  // clean Maps URL → Zoho Ubicacion
           if (freshGeo.customerName) orderData.customerName = freshGeo.customerName
@@ -825,7 +832,9 @@ async function triggerZohoOnPayment(customerPhone, customerName) {
     // so Zoho always gets real stored data — never a stale pending_order snapshot.
     const freshGeo = await getCustomerAddress(customerPhone).catch(() => null)
     if (freshGeo) {
-      if (freshGeo.address)      orderData.address      = freshGeo.address
+      // Address: trust pending_order (Claude's address from the summary shown to customer).
+      // Only fall back to DB address if Claude didn't include one (e.g. legacy orders).
+      if (!orderData.address && freshGeo.address) orderData.address = freshGeo.address
       if (freshGeo.locationPin)  orderData.locationPin  = freshGeo.locationPin
       if (freshGeo.locationUrl)  orderData.locationUrl  = freshGeo.locationUrl
       if (freshGeo.customerName) orderData.customerName = freshGeo.customerName
