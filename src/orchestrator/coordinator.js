@@ -412,7 +412,7 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       }
     }
 
-    const { enrichedMessage } = await resolveDeliveryZone(customerMessage, {
+    let { enrichedMessage } = await resolveDeliveryZone(customerMessage, {
       customerPhone,
       storedGeo,
       lastBotMsg,
