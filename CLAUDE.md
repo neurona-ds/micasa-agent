@@ -440,7 +440,7 @@ The coordinator loops `while (response.stop_reason === 'tool_use')` feeding tool
 
 **Exception**: native WhatsApp location pins (`messageType === 'location'` in `index.js`) are still handled deterministically before `processMessage()` — they are reverse-geocoded and the zone is injected into the message text passed to Claude.
 
-Low-confidence geocodes (`GEOMETRIC_CENTER` or `APPROXIMATE`) return `lowConfidence: true` — Claude naturally asks for a more specific reference.
+Low-confidence geocodes return `lowConfidence: true` — Claude naturally asks for a more specific reference. Rules: `APPROXIMATE` is always low-confidence. `GEOMETRIC_CENTER` is low-confidence **unless** the address or `formattedAddress` contains ` y `, `&`, or `and` (street intersection) — Google places `GEOMETRIC_CENTER` at the exact cross-street point, which is precise enough for zone calculation.
 
 Zone 4 results return `isZone4: true` with an exact scripted response + `HANDOFF` instruction that Claude must follow verbatim.
 
