@@ -48,6 +48,7 @@ src/
   orchestrator/
     coordinator.js          Core message processing: prompt building, Claude call, handoff logic
   tools/
+    geo.js                  GEOCODING_TOOLS schema + executeGeoTool() — called by coordinator tool loop
     order.js                Order type detection, quantity extraction, data extraction for Zoho
   prompts/
     core.md                 Claude identity + absolute rules (static markdown)
@@ -124,10 +125,10 @@ There is no multi-agent framework. The "orchestration" is a single coordinator w
 | `triggerZohoOnPayment(phone, name)` | Called when customer sends a payment image. Reads `pending_order` from DB and fires Zoho record creation. Non-blocking. | `void` |
 | `closeOrderSession(phone)` | Called when operator sends "Orden Confirmada". Ends session. | `void` |
 | `hasPendingOrder(phone)` | Exported to `index.js`; returns `true` if `pending_order` is non-null. | `Promise<boolean>` |
-| `executeGeoTool(toolName, input, context)` | Executes a geocoding tool call from Claude. Calls Google Maps API, saves result to DB, returns structured JSON for tool_result. | `Promise<object>` |
+| `executeGeoTool(toolName, input, context)` | Re-exported from `src/tools/geo.js`. Executes a geocoding tool call from Claude. Calls Google Maps API, saves result to DB, returns structured JSON for tool_result. | `Promise<object>` |
 | `buildSystemPrompt(...)` | Assembles full system prompt from core.md + 3 dynamic blocks. | `string` |
 
-**`GEOCODING_TOOLS` constant** — passed to every Claude API call. Two tools:
+**`GEOCODING_TOOLS` + `executeGeoTool`** live in `src/tools/geo.js` and are imported by coordinator. Two tools:
 - `geocode_address` — geocodes a text address, returns `{ zone, deliveryCost, isZone4, instruction }` or `{ lowConfidence }`
 - `resolve_maps_url` — resolves a Google Maps URL to coords, returns same shape plus `locationUrl`
 
@@ -186,6 +187,13 @@ Claude calls these tools autonomously when a customer provides an address or Map
 | `createZohoContact(phone, name)` | Creates Zoho Contact. Returns new contact `id`. |
 | `mapTurnoToPickList(turno)` | Maps raw turno string to Zoho pick-list value: `"12:30 a 1:30"`, `"1:30 a 2:30"`, `"2:30 a 3:30"`, `"Inmediato"`. |
 | `createZohoDeliveryRecord(orderData)` | Main entry: looks up/creates Contact, then creates record in `Planificacion_de_Entregas`. Returns record ID. |
+
+### `src/tools/geo.js`
+
+| Export | What it does |
+|---|---|
+| `GEOCODING_TOOLS` | Tool schema array passed to every Claude API call. Defines `geocode_address` and `resolve_maps_url`. |
+| `executeGeoTool(toolName, input, context)` | Executes whichever tool Claude called. Geocodes via Google Maps, checks confidence, saves to DB, returns structured result for `tool_result`. |
 
 ### `src/tools/order.js`
 
