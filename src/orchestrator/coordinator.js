@@ -1,8 +1,6 @@
 const Anthropic = require('@anthropic-ai/sdk')
 const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getAlmuerzoDeliveryTiers, getDeliveryZoneByAddress, getDeliveryZoneByCoordinates, resolveGoogleMapsUrl, getCurrentCycle, getWeekAlmuerzos, getPaymentMethods, saveDeliveryAddress, saveRawAddress, saveDeliveryZoneOnly, saveLocationPin, getCustomerAddress, getBusinessHours, lookupDeliveryCost, savePendingOrder, getPendingOrder, clearPendingOrder, getOrCreateSession, endSession } = require('../memory')
 const { createZohoDeliveryRecord } = require('../zoho')
-const { getFlags, setFlag, clearFlags } = require('../state/flags')
-const { resolveDeliveryZone } = require('../tools/geo')
 const { detectOrderTypeFromHistory, detectAlmuerzoQty, extractOrderDataForZoho, parseScheduledDate } = require('../tools/order')
 const fs   = require('fs')
 const path = require('path')
@@ -14,6 +12,147 @@ const { buildOrderRules }     = require('../prompts/orders')
 const client = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
 })
+
+const GEOCODING_TOOLS = [
+  {
+    name: 'geocode_address',
+    description: 'Geocode a customer delivery address to get the delivery zone and exact cost. Call this whenever the customer provides a delivery address (street name, intersection, landmark, or any text describing their location). Also call this when the customer confirms their previously stored address.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        address: {
+          type: 'string',
+          description: 'The delivery address or location description provided by the customer'
+        }
+      },
+      required: ['address']
+    }
+  },
+  {
+    name: 'resolve_maps_url',
+    description: 'Resolve a Google Maps URL sent by the customer (maps.app.goo.gl, goo.gl/maps, or google.com/maps links) to get their exact delivery zone and cost.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        url: {
+          type: 'string',
+          description: 'The full Google Maps URL from the customer message'
+        }
+      },
+      required: ['url']
+    }
+  }
+]
+
+/**
+ * Execute a geocoding tool call from Claude.
+ * Returns a plain object that is JSON-serialized and sent back as tool_result.
+ */
+async function executeGeoTool(toolName, input, context) {
+  const { phone, history } = context
+
+  if (toolName === 'geocode_address') {
+    const address = input.address
+    console.log(`[tool:geocode_address] Geocoding: "${address}"`)
+
+    const result = await getDeliveryZoneByAddress(address).catch(() => null)
+
+    if (!result) {
+      saveRawAddress(phone, address).catch(() => {})
+      return { success: false, error: 'Could not geocode this address. Ask the customer for a more specific reference (cross street, landmark, or Google Maps pin).' }
+    }
+
+    const isLowConfidence = ['GEOMETRIC_CENTER', 'APPROXIMATE'].includes(result.locationType)
+    if (isLowConfidence) {
+      saveRawAddress(phone, address).catch(() => {})
+      return {
+        success: false,
+        lowConfidence: true,
+        formattedAddress: result.formattedAddress,
+        error: `Address "${result.formattedAddress}" is not precise enough to calculate delivery cost. Ask the customer for the house number, building name, or a Google Maps pin.`
+      }
+    }
+
+    const { zone, distanceKm, formattedAddress } = result
+
+    if (zone === 4 || zone === '4') {
+      saveDeliveryAddress(phone, address, zone, distanceKm).catch(() => {})
+      return {
+        success: true,
+        zone: 4,
+        distanceKm,
+        formattedAddress,
+        isZone4: true,
+        instruction: 'ZONA 4 — outside delivery range. Respond EXACTLY: "¡Claro! Permíteme un momento, estamos verificando el costo de envío para tu sector 🔍 En breve un asesor te confirma los detalles." then emit HANDOFF.'
+      }
+    }
+
+    const orderType = detectOrderTypeFromHistory(history)
+    const qty = detectAlmuerzoQty(history)
+    const deliveryCost = await lookupDeliveryCost(zone, orderType, null, orderType === 'almuerzo' ? qty : null).catch(() => null)
+
+    saveDeliveryAddress(phone, address, zone, distanceKm).catch(() => {})
+
+    return {
+      success: true,
+      zone,
+      distanceKm,
+      formattedAddress,
+      deliveryCost,
+      isZone4: false,
+      instruction: `Use deliveryCost $${deliveryCost != null ? deliveryCost.toFixed(2) : '(see zone tables)'} exactly. Do NOT calculate or estimate a different price. Zone number must NEVER be shown to the customer.`
+    }
+  }
+
+  if (toolName === 'resolve_maps_url') {
+    const url = input.url
+    console.log(`[tool:resolve_maps_url] Resolving: "${url}"`)
+
+    const coords = await resolveGoogleMapsUrl(url).catch(() => null)
+    const zoneResult = coords
+      ? await getDeliveryZoneByCoordinates(coords.lat, coords.lng).catch(() => null)
+      : await getDeliveryZoneByAddress(url).catch(() => null)
+
+    if (!zoneResult) {
+      return { success: false, error: 'Could not determine delivery zone from this Maps URL. Ask the customer to type their address instead.' }
+    }
+
+    const { zone, distanceKm } = zoneResult
+
+    if (coords) {
+      saveLocationPin(phone, coords.lat, coords.lng).catch(() => {})
+    }
+    saveDeliveryZoneOnly(phone, zone, distanceKm).catch(() => {})
+
+    if (zone === 4 || zone === '4') {
+      return {
+        success: true,
+        zone: 4,
+        distanceKm,
+        isZone4: true,
+        locationUrl: coords ? `https://www.google.com/maps?q=${coords.lat},${coords.lng}` : url,
+        instruction: 'ZONA 4 — outside delivery range. Respond EXACTLY: "¡Claro! Permíteme un momento, estamos verificando el costo de envío para tu sector 🔍 En breve un asesor te confirma los detalles." then emit HANDOFF.'
+      }
+    }
+
+    const orderType = detectOrderTypeFromHistory(history)
+    const qty = detectAlmuerzoQty(history)
+    const deliveryCost = await lookupDeliveryCost(zone, orderType, null, orderType === 'almuerzo' ? qty : null).catch(() => null)
+    const locationUrl = coords ? `https://www.google.com/maps?q=${coords.lat},${coords.lng}` : url
+
+    return {
+      success: true,
+      zone,
+      distanceKm,
+      deliveryCost,
+      isZone4: false,
+      locationUrl,
+      instruction: `Use deliveryCost $${deliveryCost != null ? deliveryCost.toFixed(2) : '(see zone tables)'} exactly. In the order summary write the address as "📍 ${url}". Do NOT show zone number to customer.`
+    }
+  }
+
+  return { success: false, error: `Unknown tool: ${toolName}` }
+}
 
 // Return a Date object representing the current moment in Ecuador time (UTC-5).
 // Ecuador does not observe DST so this offset is always fixed.
@@ -247,9 +386,6 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     // Save customer to db
     await upsertCustomer(customerPhone, customerName)
 
-    // Load persisted geocoding flags from Supabase (survive server restarts)
-    const flags = await getFlags(customerPhone)
-
     // ── Session management ────────────────────────────────────────────────────
     // Get or create the current session for this customer.  All saveMessage()
     // and getHistory() calls below are scoped to this sessionId so Claude only
@@ -350,8 +486,6 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
           console.warn(`[proactive-geocode] Low confidence or failed for: "${_extractedAddr}" — saving raw address`)
           await saveRawAddress(customerPhone, _extractedAddr)
             .catch(e => console.warn('saveRawAddress (fanesca fast-path) failed:', e.message))
-          await setFlag(customerPhone, 'house_number_pending', true)
-          console.log(`[proactive-geocode] houseNumberPending set for ${customerPhone}`)
         }
       }
 
@@ -394,118 +528,24 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       return acc
     }, [])
 
-    const lastBotMsg = [...history].reverse().find(h => h.role === 'assistant')
+    let enrichedMessage = customerMessage
 
-    // ── Shared helper: build orderTypeNote from history ──────────────────────
-    const buildOrderTypeNote = () => {
-      const orderType = detectOrderTypeFromHistory(history)
-      if (orderType === 'almuerzo') {
-        const qty = detectAlmuerzoQty(history)
-        console.log(`Order type: ALMUERZO (qty=${qty})`)
-        return `Tipo de pedido: ALMUERZO PURO (${qty} unidad${qty !== 1 ? 'es' : ''}). Usar tabla TARIFAS ALMUERZOS para calcular envío.`
-      } else if (orderType === 'mixed') {
-        console.log(`Order type: MIXED`)
-        return `Tipo de pedido: MIXTO (almuerzo + carta). Usar tabla CARTA sobre el total combinado.`
-      } else {
-        console.log(`Order type: CARTA`)
-        return `Tipo de pedido: CARTA. Usar tabla CARTA por valor del pedido.`
-      }
+    // Give Claude context about any stored address so it can offer it back to the customer.
+    // Zone and cost lookup is handled by the geocoding tools — do not inject those here.
+    if (storedGeo?.address && storedGeo?.zone) {
+      enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una dirección registrada: "${storedGeo.address}". Al momento de pedir la dirección de entrega, ofrece primero esta opción: "¿Enviamos a tu dirección anterior — ${storedGeo.address} — o prefieres indicar una nueva? 📍". Si el cliente confirma, llama a geocode_address con esa dirección para obtener el costo exacto.]`
+    } else if (storedGeo?.address && !storedGeo?.zone) {
+      enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una dirección de referencia parcial guardada: "${storedGeo.address}" — sin zona confirmada aún. Cuando necesites el costo de envío, llama a geocode_address con esta dirección (o con la dirección completa que el cliente proporcione).]`
+    } else if (storedGeo?.locationPin) {
+      const pinUrl = storedGeo.locationUrl || `https://www.google.com/maps?q=${storedGeo.locationPin.lat},${storedGeo.locationPin.lng}`
+      enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una ubicación guardada: ${pinUrl}. Si el cliente no menciona una nueva dirección, ofrece esta ubicación: "¿Enviamos a tu ubicación guardada — ${pinUrl} — o prefieres indicar una nueva? 📍". Si confirma, llama a resolve_maps_url con esa URL para obtener el costo.]`
     }
-
-    let { enrichedMessage } = await resolveDeliveryZone(customerMessage, {
-      customerPhone,
-      storedGeo,
-      lastBotMsg,
-      history,
-      flags,
-      buildOrderTypeNote,
-      detectOrderTypeFromHistory,
-      detectAlmuerzoQty
-    })
-
-    // NOTE: msgTrimmed still needed below for in-person and confirmation detection
-    const msgTrimmed = customerMessage.trim()
-
-    // (geocoding branches have been extracted to src/tools/geo.js)
 
     // Business-hours check — uses DB data (businessHours) fetched above, so the schedule
     // can be changed in Supabase without requiring a redeployment.
     // Must happen BEFORE messages.push() so the after-hours tag lands in the right message.
     const nowEc = nowInEcuador()
     const isRestaurantOpen = checkIsOpen(businessHours, nowEc)
-
-    // Inject stored delivery info so Claude can offer it to the customer without asking from scratch.
-    if (storedGeo?.address && !storedGeo?.zone) {
-      // Address saved but no zone — it's a landmark/intersection without an exact house number.
-      // Claude must ask naturally for JUST the number or building name (not the full address again).
-      const shortBase = storedGeo.address.length > 60
-        ? storedGeo.address.substring(0, 60) + '…'
-        : storedGeo.address
-      enrichedMessage += `\n\n[SISTEMA: Este cliente indicó anteriormente la dirección de referencia: "${storedGeo.address}" — pero es una intersección o referencia sin número de casa exacto, por lo que AÚN NO se puede calcular el costo de envío. Cuando llegue el momento de confirmar la dirección de entrega, pide de forma natural el número de casa, nombre del edificio, o su ubicación de Google Maps. Ejemplo: "Para darte el costo de envío exacto, ¿nos podrías dar el número de casa o el nombre del edificio en ${shortBase}? Puedes también compartir tu ubicación de Google Maps 📍🏠" — El cliente puede responder con solo el número (ej. E2-24), con la dirección parcial (Mariana de Jesús E2-24), con la dirección completa, o con un pin/link de Maps. El sistema geocodificará automáticamente cualquier formato.]`
-    } else if (storedGeo?.address) {
-      // Complete address with zone — offer it back verbatim, and inject zone + cost
-      // so Claude never has to guess the delivery price.
-      const addrZone = storedGeo.zone || null
-      let addrCostInstruction = ''
-      if (addrZone === 4 || addrZone === '4') {
-        addrCostInstruction = ` ⛔ ZONA 4: si el cliente confirma esta dirección, responde EXACTAMENTE: "¡Claro! Permíteme un momento, estamos verificando el costo de envío para tu sector 🔍 En breve un asesor te confirma los detalles." y luego escribe HANDOFF. NUNCA indiques un precio de envío.`
-      } else if (addrZone) {
-        const pendingForAddr = await getPendingOrder(customerPhone).catch(() => null)
-        const addrCost = await lookupDeliveryCost(addrZone, detectOrderTypeFromHistory(history), pendingForAddr?.total || null, pendingForAddr?.cantidad || null).catch(() => null)
-        if (addrCost !== null) {
-          addrCostInstruction = ` Zona interna: ${addrZone} (NO mencionar al cliente). El costo de envío exacto según la base de datos es $${addrCost.toFixed(2)} — usa ESTE número exactamente, no calcules por tu cuenta.`
-        } else {
-          addrCostInstruction = ` Zona interna: ${addrZone} (NO mencionar al cliente). El costo de envío exacto no está disponible aún — usa las tablas de tarifas para zona ${addrZone}.`
-        }
-      }
-      enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una dirección registrada: "${storedGeo.address}".${addrCostInstruction} Al momento de pedir la dirección de entrega, SIEMPRE ofrece primero esta opción preguntando: "¿Enviamos a tu dirección anterior — ${storedGeo.address} — o prefieres indicar una nueva? 📍". Si el cliente confirma, usa EXACTAMENTE esta dirección. Si da una nueva, úsala y descarta la registrada.]`
-    } else if (storedGeo?.locationPin) {
-      // Customer previously shared a location pin.
-      // Use the clean Maps URL stored in last_location_url — always built from real coords,
-      // regardless of whether the customer sent a native pin or a Maps URL.
-      const pinLabel = storedGeo.locationUrl || 'Ubicación compartida vía WhatsApp'
-
-      // Recover zone if it wasn't stored (e.g. URL had ?g_st=aw when first saved).
-      // Re-resolve now so Claude always gets zone info for stored pins.
-      let pinZone = storedGeo.zone || null
-      if (!pinZone) {
-        try {
-          // last_location_pin now only stores { lat, lng } — no url field.
-          // If coords are present, use them directly.
-          let coords = storedGeo.locationPin?.lat != null
-            ? { lat: storedGeo.locationPin.lat, lng: storedGeo.locationPin.lng }
-            : null
-          if (coords) {
-            const zoneResult = await getDeliveryZoneByCoordinates(coords.lat, coords.lng)
-            if (zoneResult) {
-              pinZone = zoneResult.zone
-              // Persist the recovered zone so next turn doesn't need to re-resolve
-              saveDeliveryZoneOnly(customerPhone, zoneResult.zone, zoneResult.distanceKm).catch(() => {})
-              console.log(`[storedPin] Zone recovered: ${pinZone} (${zoneResult.distanceKm}km)`)
-            }
-          }
-        } catch (e) {
-          console.warn('[storedPin] Zone recovery failed:', e.message)
-        }
-      }
-
-      // Build cost instruction: zone 4 → always HANDOFF, other zones → inject real DB cost.
-      // Never tell Claude to "cotiza" on its own — it will hallucinate.
-      let pinCostInstruction = ''
-      if (pinZone === 4 || pinZone === '4') {
-        pinCostInstruction = ` ⛔ ZONA 4: si el cliente confirma esta ubicación, responde EXACTAMENTE: "¡Claro! Permíteme un momento, estamos verificando el costo de envío para tu sector 🔍 En breve un asesor te confirma los detalles." y luego escribe HANDOFF. NUNCA indiques un precio de envío.`
-      } else if (pinZone) {
-        const pendingForPin = await getPendingOrder(customerPhone).catch(() => null)
-        const pinCost = await lookupDeliveryCost(pinZone, detectOrderTypeFromHistory(history), pendingForPin?.total || null, pendingForPin?.cantidad || null).catch(() => null)
-        if (pinCost !== null) {
-          pinCostInstruction = ` Zona interna: ${pinZone} (NO mencionar al cliente). El costo de envío exacto según la base de datos es $${pinCost.toFixed(2)} — usa ESTE número exactamente, no calcules por tu cuenta.`
-        } else {
-          pinCostInstruction = ` Zona interna: ${pinZone} (NO mencionar al cliente). El costo de envío exacto no está disponible aún — usa las tablas de tarifas para zona ${pinZone}.`
-        }
-      }
-
-      enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una ubicación guardada de una sesión anterior: "${pinLabel}".${pinCostInstruction} Si el cliente YA mencionó una dirección o sector en este mensaje, usa esa información directamente — NO preguntes por la guardada. Solo ofrece la guardada si el cliente NO ha mencionado ninguna ubicación: "¿Enviamos a tu ubicación guardada — ${pinLabel} — o prefieres indicar una nueva? 📍". Si confirma la guardada: usa el costo indicado arriba y en el resumen escribe "📍 ${pinLabel}". Si da nueva dirección: procesa normalmente.]`
-    }
 
     // Inject [SISTEMA] after-hours tag directly into the user message so Claude sees
     // the constraint inline — more reliable than relying on the distant system-prompt flag.
@@ -557,8 +597,7 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       const inPersonReply = '¡Perfecto! Te estaremos esperando. El pago se realiza directamente en el local. ¡Hasta pronto! 👋'
       await saveMessage(customerPhone, 'user', customerMessage, sessionId)
       await saveMessage(customerPhone, 'assistant', inPersonReply, sessionId)
-      // Conversation complete — end session and clear geocoding flags
-      await clearFlags(customerPhone)
+      // Conversation complete — end session
       endSession(customerPhone).catch(() => {})
       return {
         reply: inPersonReply,
@@ -616,8 +655,11 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       }
     }
 
-    // Call Claude
-    const response = await client.messages.create({
+    // Build the initial messages array
+    let currentMessages = [...messages]
+
+    // First Claude call — may respond with tool_use if geocoding is needed
+    let response = await client.messages.create({
       model: 'claude-sonnet-4-5',
       max_tokens: 2048,
       system: [
@@ -627,7 +669,8 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
           cache_control: { type: 'ephemeral' }
         }
       ],
-      messages
+      messages: currentMessages,
+      tools: GEOCODING_TOOLS
     })
 
     console.log(
@@ -637,12 +680,59 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       ` cache_created=${response.usage.cache_creation_input_tokens ?? 0}`
     )
 
+    // Tool execution loop — runs until Claude produces a final text response
+    const toolContext = {
+      phone: customerPhone,
+      history
+    }
+
+    while (response.stop_reason === 'tool_use') {
+      const toolUseBlocks = response.content.filter(b => b.type === 'tool_use')
+      const toolResults = []
+
+      for (const toolUse of toolUseBlocks) {
+        console.log(`[tool_use] Claude called: ${toolUse.name}`, toolUse.input)
+        const result = await executeGeoTool(toolUse.name, toolUse.input, toolContext)
+        console.log(`[tool_result] ${toolUse.name}:`, JSON.stringify(result))
+        toolResults.push({
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content: JSON.stringify(result)
+        })
+      }
+
+      // Append assistant turn (with tool_use blocks) + tool results as user turn
+      currentMessages = [
+        ...currentMessages,
+        { role: 'assistant', content: response.content },
+        { role: 'user', content: toolResults }
+      ]
+
+      response = await client.messages.create({
+        model: 'claude-sonnet-4-5',
+        max_tokens: 2048,
+        system: [
+          {
+            type: 'text',
+            text: fullSystemPrompt,
+            cache_control: { type: 'ephemeral' }
+          }
+        ],
+        messages: currentMessages,
+        tools: GEOCODING_TOOLS
+      })
+
+      console.log(
+        `[tokens:tool-follow-up] input=${response.usage.input_tokens}` +
+        ` output=${response.usage.output_tokens}`
+      )
+    }
+
     console.log('Full Claude response:', JSON.stringify(response, null, 2))
 
     // Guard against empty content
-    if (!response.content || response.content.length === 0 || !response.content[0].text) {
+    if (!response.content || response.content.length === 0) {
       console.warn('Claude returned empty content. stop_reason:', response.stop_reason)
-      // Do NOT save anything to history — keep DB clean
       return {
         reply: 'Lo sentimos, no pude procesar tu mensaje. Por favor intenta de nuevo.',
         needsHandoff: false,
@@ -650,7 +740,17 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       }
     }
 
-    let replyText = response.content[0].text
+    const textBlock = response.content.find(b => b.type === 'text')
+    if (!textBlock || !textBlock.text) {
+      console.warn('Claude returned no text block. stop_reason:', response.stop_reason)
+      return {
+        reply: 'Lo sentimos, no pude procesar tu mensaje. Por favor intenta de nuevo.',
+        needsHandoff: false,
+        needsPaymentHandoff: false
+      }
+    }
+
+    let replyText = textBlock.text
     console.log('Claude reply:', replyText)
 
     // Guard: if Claude sent a confirmation prompt but forgot <ORDEN>, retry once with a stronger instruction.
@@ -807,7 +907,6 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         // Clear the order snapshot so follow-up images don't re-trigger Zoho.
         // Session stays open — it will be closed by closeOrderSession() when the
         // operator sends "📦 Orden Confirmada" to the customer.
-        clearFlags(customerPhone).catch(() => {})
         clearPendingOrder(customerPhone).catch(() => {})
       } else {
         console.warn('Zoho: HANDOFF_PAYMENT detected but no order data found — skipping')
@@ -891,7 +990,6 @@ async function triggerZohoOnPayment(customerPhone, customerName) {
     // Clear the order snapshot so follow-up images don't re-trigger Zoho.
     // Session stays open — it will be closed by closeOrderSession() when the
     // operator sends "📦 Orden Confirmada" to the customer.
-    clearFlags(customerPhone).catch(() => {})
     clearPendingOrder(customerPhone).catch(() => {})
   } catch (err) {
     console.error('Zoho triggerZohoOnPayment error (non-blocking):', err.message)
@@ -907,7 +1005,6 @@ async function triggerZohoOnPayment(customerPhone, customerName) {
  * customer's next message starts a fresh session with an active bot.
  */
 async function closeOrderSession(phone) {
-  await clearFlags(phone)
   await endSession(phone).catch(e => console.error('[closeOrderSession] endSession error:', e.message))
   console.log(`[closeOrderSession] Session closed for ${phone}`)
 }
