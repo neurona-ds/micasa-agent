@@ -650,8 +650,30 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       }
     }
 
-    const replyText = response.content[0].text
+    let replyText = response.content[0].text
     console.log('Claude reply:', replyText)
+
+    // Guard: if Claude sent a confirmation prompt but forgot <ORDEN>, retry once with a stronger instruction.
+    if (replyText.includes('Confirmas tu pedido') && !replyText.includes('<ORDEN>')) {
+      console.warn('[ORDEN missing] Claude sent confirmation prompt without <ORDEN> — retrying with explicit instruction')
+      const retryMessages = [
+        ...messages,
+        { role: 'assistant', content: replyText },
+        { role: 'user', content: '[SISTEMA INTERNO: Tu respuesta anterior no incluyó el bloque <ORDEN> obligatorio. Repite el resumen completo e incluye el bloque <ORDEN>{...}</ORDEN> inmediatamente después de "¿Confirmas tu pedido?". Este bloque es requerido por el sistema para procesar el pedido.]' }
+      ]
+      const retryResponse = await client.messages.create({
+        model: 'claude-sonnet-4-5',
+        max_tokens: 2048,
+        system: [{ type: 'text', text: fullSystemPrompt }],
+        messages: retryMessages
+      })
+      if (retryResponse.content?.[0]?.text?.includes('<ORDEN>')) {
+        replyText = retryResponse.content[0].text
+        console.log('[ORDEN missing] Retry succeeded — <ORDEN> present in retry response')
+      } else {
+        console.warn('[ORDEN missing] Retry also missing <ORDEN> — proceeding with original response')
+      }
+    }
 
     // Strip <ORDEN> block before saving to history and sending to customer —
     // it is a machine-readable tag, the customer should never see it.
