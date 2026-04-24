@@ -585,24 +585,34 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     const isConfirmation = hadConfirmationPrompt && isAffirmative && isRestaurantOpen
 
     if (isConfirmation) {
-      console.log('Order confirmation detected — BYPASSING Claude, sending payment directly')
+      // Guard: only bypass if pending_order exists (i.e. Claude emitted <ORDEN> in the summary).
+      // If pending_order is null, Claude skipped <ORDEN> — fall through so Claude re-generates
+      // the summary with <ORDEN> before payment info, otherwise Zoho has nothing to use.
+      const pendingForConfirm = await getPendingOrder(customerPhone).catch(() => null)
+      if (!pendingForConfirm) {
+        console.log('Order confirmation detected but no pending_order — falling through to Claude to re-emit <ORDEN>')
+        enrichedMessage += '\n\n[SISTEMA INTERNO — NO mostrar al cliente: El resumen anterior no generó el bloque <ORDEN>. DEBES incluirlo ahora. Muestra el resumen del pedido con <ORDEN>{...}</ORDEN> y luego envía los datos bancarios con HANDOFF_PAYMENT.]'
+        // fall through to Claude call below
+      } else {
+        console.log('Order confirmation detected — BYPASSING Claude, sending payment directly')
 
-      // Extract total from the confirmation message.
-      // Use \bTOTAL\b so we match "TOTAL:" but NOT "Subtotal:" (word boundary prevents substring match)
-      const totalMatch = confirmationMsg.message.match(/\bTOTAL\b[:\s*]+\$?([\d,.]+)/i)
-      const totalAmount = totalMatch ? `$${totalMatch[1]}` : '(ver resumen arriba)'
+        // Extract total from the confirmation message.
+        // Use \bTOTAL\b so we match "TOTAL:" but NOT "Subtotal:" (word boundary prevents substring match)
+        const totalMatch = confirmationMsg.message.match(/\bTOTAL\b[:\s*]+\$?([\d,.]+)/i)
+        const totalAmount = totalMatch ? `$${totalMatch[1]}` : '(ver resumen arriba)'
 
-      // Build payment reply directly without calling Claude
-      const bankInfo = formatPaymentMethods(paymentMethods)
-      const paymentReply = `¡Perfecto! Tu pedido está confirmado 🎉\n\nAquí están los datos para tu transferencia:\n\n${bankInfo}\n\n*Monto a transferir: ${totalAmount}*\n\nUna vez realices la transferencia, envíanos la captura del comprobante para procesar tu pedido. ¡Gracias por confiar en nosotros! 💛`
+        // Build payment reply directly without calling Claude
+        const bankInfo = formatPaymentMethods(paymentMethods)
+        const paymentReply = `¡Perfecto! Tu pedido está confirmado 🎉\n\nAquí están los datos para tu transferencia:\n\n${bankInfo}\n\n*Monto a transferir: ${totalAmount}*\n\nUna vez realices la transferencia, envíanos la captura del comprobante para procesar tu pedido. ¡Gracias por confiar en nosotros! 💛`
 
-      await saveMessage(customerPhone, 'user', customerMessage, sessionId)
-      await saveMessage(customerPhone, 'assistant', paymentReply, sessionId)
+        await saveMessage(customerPhone, 'user', customerMessage, sessionId)
+        await saveMessage(customerPhone, 'assistant', paymentReply, sessionId)
 
-      return {
-        reply: paymentReply,
-        needsHandoff: false,
-        needsPaymentHandoff: false
+        return {
+          reply: paymentReply,
+          needsHandoff: false,
+          needsPaymentHandoff: false
+        }
       }
     }
 
