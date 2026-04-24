@@ -686,8 +686,10 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
           // Address: prefer Claude's parsed address (matches what customer saw in summary).
           // Fall back to DB address for legacy orders that predate this field in <ORDEN>.
           address:       claudeSnap.address       || freshGeo?.address        || null,
-          locationPin:   freshGeo?.locationPin    || null,   // { lat, lng } for internal use
-          locationUrl:   freshGeo?.locationUrl    || null,   // clean Maps URL → Zoho Ubicacion
+          // locationPin/locationUrl: only use DB pin if the stored address still matches.
+          // If the customer changed address (text), the stored pin belongs to the old address.
+          locationPin:   (freshGeo?.locationPin && (!claudeSnap.address || claudeSnap.address === freshGeo?.address)) ? freshGeo.locationPin : null,
+          locationUrl:   (freshGeo?.locationUrl && (!claudeSnap.address || claudeSnap.address === freshGeo?.address)) ? freshGeo.locationUrl : null,
           deliveryCost:  null  // filled below
         }
         // Priority: operator-provided cost > Claude's cost from summary > DB zone lookup.
@@ -828,15 +830,17 @@ async function triggerZohoOnPayment(customerPhone, customerName) {
       return
     }
 
-    // Override with authoritative DB values (address, locationUrl, customerName, deliveryCost)
-    // so Zoho always gets real stored data — never a stale pending_order snapshot.
+    // Enrich with DB values (customerName, campana, locationPin if still valid).
     const freshGeo = await getCustomerAddress(customerPhone).catch(() => null)
     if (freshGeo) {
       // Address: trust pending_order (Claude's address from the summary shown to customer).
       // Only fall back to DB address if Claude didn't include one (e.g. legacy orders).
       if (!orderData.address && freshGeo.address) orderData.address = freshGeo.address
-      if (freshGeo.locationPin)  orderData.locationPin  = freshGeo.locationPin
-      if (freshGeo.locationUrl)  orderData.locationUrl  = freshGeo.locationUrl
+      // locationPin/locationUrl: only use DB pin if the stored address still matches the order address.
+      // If customer changed address (gave new text), the stored pin belongs to the old address.
+      const addressChanged = orderData.address && freshGeo.address && orderData.address !== freshGeo.address
+      if (!addressChanged && freshGeo.locationPin) orderData.locationPin = freshGeo.locationPin
+      if (!addressChanged && freshGeo.locationUrl) orderData.locationUrl = freshGeo.locationUrl
       if (freshGeo.customerName) orderData.customerName = freshGeo.customerName
       if (freshGeo.campana)      orderData.campana      = freshGeo.campana      // Meta ad campaign
       if (freshGeo.zone) {
