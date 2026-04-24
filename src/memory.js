@@ -484,7 +484,12 @@ async function saveDeliveryAddress(phone, formattedAddress, zone, distanceKm) {
     .update({
       last_delivery_address: formattedAddress,
       last_delivery_zone: zone,
-      last_delivery_distance_km: distanceKm
+      last_delivery_distance_km: distanceKm,
+      // Clear stale pin — text address and location pin are mutually exclusive.
+      // Without this, an old pin passes through the "addresses match" guard in
+      // the order snapshot and lands in Zoho as Ubicacion for the wrong address.
+      last_location_pin: null,
+      last_location_url: null
     })
     .eq('phone', phone)
 
@@ -498,7 +503,12 @@ async function saveDeliveryAddress(phone, formattedAddress, zone, distanceKm) {
 async function saveRawAddress(phone, rawAddress) {
   const { error } = await supabase
     .from('customers')
-    .update({ last_delivery_address: rawAddress })
+    .update({
+      last_delivery_address: rawAddress,
+      // Clear stale pin — same reason as saveDeliveryAddress above.
+      last_location_pin: null,
+      last_location_url: null
+    })
     .eq('phone', phone)
 
   if (error) console.error('[saveRawAddress] Error:', error)
