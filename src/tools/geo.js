@@ -70,9 +70,15 @@ async function executeGeoTool(toolName, input, context) {
 
     console.log(`[tool:geocode_address] Raw result: locationType=${result.locationType} zone=${result.zone} dist=${result.distanceKm}km formattedAddress="${result.formattedAddress}"`)
 
-    const isLowConfidence = ['GEOMETRIC_CENTER', 'APPROXIMATE'].includes(result.locationType)
+    // GEOMETRIC_CENTER on a street intersection is precise enough — Google places it at
+    // the exact cross-street point, it just can't assign a "rooftop" there.
+    // Treat intersections as high-confidence even when locationType=GEOMETRIC_CENTER.
+    const isIntersection = /\s(y|&|and)\s/i.test(result.formattedAddress) || /\s(y|&)\s/i.test(address)
+    const isLowConfidence = result.locationType === 'APPROXIMATE' ||
+      (result.locationType === 'GEOMETRIC_CENTER' && !isIntersection)
+
     if (isLowConfidence) {
-      console.warn(`[tool:geocode_address] Low confidence — locationType=${result.locationType} for input "${address}" → resolved to "${result.formattedAddress}"`)
+      console.warn(`[tool:geocode_address] Low confidence — locationType=${result.locationType} isIntersection=${isIntersection} for input "${address}" → resolved to "${result.formattedAddress}"`)
       saveRawAddress(phone, address).catch(() => {})
       return {
         success: false,
