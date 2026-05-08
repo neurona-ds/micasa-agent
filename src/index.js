@@ -315,15 +315,19 @@ app.post('/webhook', async (req, res) => {
       return res.status(200).json({ status: 'rate_limited' })
     }
 
-    // Detect media/image message types
+    // Detect media message types
     const messageType = (body.type || 'text').toLowerCase()
-    const isMediaMessage = ['image', 'document', 'audio', 'video'].includes(messageType)
+    const isNonTextMedia = ['image', 'document', 'audio', 'video'].includes(messageType)
 
-    // If customer sent a photo/media — treat as payment confirmation only if there
-    // is an active pending order. Subsequent images (e.g. clarifications) are
-    // forwarded to the admin without re-triggering the full payment flow.
-    if (isMediaMessage) {
+    // Only images are accepted as payment proof (comprobante).
+    // All other media types (audio, video, document) are silently ignored.
+    if (isNonTextMedia) {
       console.log(`MEDIA MESSAGE received from ${customerPhone} — type: ${messageType}`)
+
+      if (messageType !== 'image') {
+        console.log(`Non-image media (${messageType}) from ${customerPhone} — ignored`)
+        return res.status(200).json({ status: 'media_ignored' })
+      }
 
       const hasPending = await hasPendingOrder(customerPhone)
 
@@ -340,10 +344,11 @@ app.post('/webhook', async (req, res) => {
         await saveMessage(customerPhone, 'assistant', ackMessage, mediaSid)
           .catch(e => console.warn('[media] saveMessage (ack) failed:', e.message))
         await notifyHandoff(customerPhone, customerName, 'PAYMENT', 'Cliente envió comprobante de pago')
+        await pauseBot(customerPhone)
         triggerZohoOnPayment(customerPhone, customerName)
       } else {
         // Follow-up image — order already processed, ignore silently
-        console.log(`MEDIA follow-up (no pending order) from ${customerPhone} — ignored`)
+        console.log(`Image follow-up (no pending order) from ${customerPhone} — ignored`)
       }
 
       return res.status(200).json({ status: 'media_handoff' })
