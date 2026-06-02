@@ -157,67 +157,28 @@ async function getDeliveryTiers() {
   return data
 }
 
-// Auto-advance cycle every Monday. Cycle + last-updated date live in the DB
-// (config table) so this survives deploys — nothing is in memory.
+// Read the current almuerzo cycle. PURE READ — never writes.
+//
+// The weekly auto-advance is owned EXCLUSIVELY by a Supabase pg_cron job
+// (function advance_almuerzo_cycle(), scheduled Mondays 00:05 Ecuador time).
+// The bot must NEVER advance the cycle: doing it on the per-message read path
+// was non-atomic and a burst of concurrent messages (e.g. test traffic on
+// 2026-05-23) raced and advanced it multiple times, corrupting the rotation.
 //
 // ⚠️  To manually correct the cycle, update BOTH rows in the config table:
-//   key='current_cycle'    → value='N'
+//   key='current_cycle'      → value='N'
 //   key='cycle_last_updated' → value='YYYY-MM-DD' (the Monday of the current week)
-// Updating only one of them will cause the next auto-advance to compute wrong.
 async function getCurrentCycle() {
   try {
     const { data, error } = await supabase
       .from('config')
-      .select('key, value')
-      .in('key', ['current_cycle', 'cycle_last_updated', 'almuerzo_cycle_count'])
+      .select('value')
+      .eq('key', 'current_cycle')
+      .single()
 
     if (error) throw error
 
-    const cfg = data.reduce((acc, row) => { acc[row.key] = row.value; return acc }, {})
-
-    const cycleCount  = parseInt(cfg.almuerzo_cycle_count || '5')
-    const currentCycle = parseInt(cfg.current_cycle || '1')
-    const lastUpdated  = cfg.cycle_last_updated ? new Date(cfg.cycle_last_updated) : null
-
-    // Most recent Monday in Ecuador time (UTC-5, no DST)
-    const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Guayaquil' }))
-    const daysSinceMonday = now.getDay() === 0 ? 6 : now.getDay() - 1
-    const thisMonday = new Date(now)
-    thisMonday.setDate(now.getDate() - daysSinceMonday)
-    thisMonday.setHours(0, 0, 0, 0)
-
-    // Only advance if cycle_last_updated is before this Monday (fires once per week)
-    if (!lastUpdated || lastUpdated < thisMonday) {
-      const newCycle = (currentCycle % cycleCount) + 1
-      const newDate  = thisMonday.toISOString().split('T')[0]
-
-      const { error: upsertError } = await supabase.from('config').upsert([
-        { key: 'current_cycle',      value: String(newCycle) },
-        { key: 'cycle_last_updated', value: newDate }
-      ], { onConflict: 'key' })
-
-      if (upsertError) {
-        console.error('[cycle] Failed to save new cycle to config:', upsertError.message)
-      } else {
-        // Append to cycle_log JSON array stored in config table
-        const { data: logRow } = await supabase.from('config').select('value').eq('key', 'almuerzo_cycle_log').single()
-        const existingLog = logRow?.value ? JSON.parse(logRow.value) : []
-        existingLog.push({
-          advanced_at: new Date().toISOString(),
-          from_cycle:  currentCycle,
-          to_cycle:    newCycle,
-          week_of:     newDate
-        })
-        await supabase.from('config').upsert(
-          { key: 'almuerzo_cycle_log', value: JSON.stringify(existingLog) },
-          { onConflict: 'key' }
-        )
-      }
-
-      console.log(`[cycle] AUTO-ADVANCED: C${currentCycle} → C${newCycle} (week of ${newDate})`)
-      return newCycle
-    }
-
+    const currentCycle = parseInt(data?.value || '1')
     console.log(`[cycle] Current cycle: C${currentCycle}`)
     return currentCycle
   } catch (e) {

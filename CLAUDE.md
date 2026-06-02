@@ -155,7 +155,7 @@ Claude calls these tools autonomously when a customer provides an address or Map
 | `getDeliveryZones()` | Returns available delivery zones with neighborhood info. |
 | `getDeliveryTiers()` | Returns carta delivery tiers (order-value-based pricing per zone). |
 | `getAlmuerzoDeliveryTiers()` | Returns almuerzo delivery tiers (quantity-based pricing per zone). |
-| `getCurrentCycle()` | Returns current almuerzo menu cycle number. Auto-advances Monday; logs to `almuerzo_cycle_log`. |
+| `getCurrentCycle()` | Returns current almuerzo menu cycle number. **Pure read** — never writes. The weekly auto-advance is owned exclusively by a Supabase `pg_cron` job (`advance_almuerzo_cycle()`, Mondays 00:05 ECT; see `sql/almuerzo_cycle_cron.sql`). The bot must never advance the cycle (the old write-on-read path raced under concurrent traffic and corrupted the rotation on 2026-05-23). |
 | `getWeekAlmuerzos(cycle)` | Returns Mon-Fri almuerzo menu for given cycle. |
 | `getPaymentMethods()` | Returns active bank accounts. |
 | `getDeliveryZoneByAddress(address)` | Geocodes text address, calculates Haversine distance from restaurant, returns `{ zone, distanceKm, formattedAddress, locationType }`. |
