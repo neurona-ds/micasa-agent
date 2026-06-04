@@ -19,10 +19,15 @@ const client = new Anthropic({
 // We use this everywhere we need "today" — using raw new Date() returns UTC
 // which is 5 hours ahead and causes wrong day-of-week after 7pm Ecuador time.
 function nowInEcuador() {
-  // Ecuador is UTC-5 with no DST. Use fixed offset arithmetic instead of
-  // toLocaleString(), which is unreliable on Railway's minimal Node.js builds
-  // and returns UTC time when ICU timezone data is unavailable.
-  return new Date(Date.now() - 5 * 60 * 60 * 1000)
+  // Ecuador is UTC-5 with no DST. We adjust the UTC time by -5 hours, and then
+  // adjust for the host environment's timezone offset so that standard Date methods
+  // (getHours, getMinutes, getDay, etc.) return the correct Ecuador local values.
+  const utcMs = Date.now();
+  const ecuadorOffsetMs = -5 * 60 * 60 * 1000;
+  const ecuadorTimeMs = utcMs + ecuadorOffsetMs;
+  const tempDate = new Date(ecuadorTimeMs);
+  const localOffsetMs = tempDate.getTimezoneOffset() * 60 * 1000;
+  return new Date(ecuadorTimeMs + localOffsetMs);
 }
 
 // ─── Business-hours helpers ────────────────────────────────────────────────────
@@ -391,14 +396,26 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     let enrichedMessage = customerMessage
 
     // Give Claude context about any stored address so it can offer it back to the customer.
-    // Zone and cost lookup is handled by the geocoding tools — do not inject those here.
-    if (storedGeo?.address && storedGeo?.zone) {
-      enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una dirección registrada: "${storedGeo.address}". Al momento de pedir la dirección de entrega, ofrece primero esta opción: "¿Enviamos a tu dirección anterior — ${storedGeo.address} — o prefieres indicar una nueva? 📍". Si el cliente confirma, llama a geocode_address con esa dirección para obtener el costo exacto.]`
-    } else if (storedGeo?.address && !storedGeo?.zone) {
-      enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una dirección de referencia parcial guardada: "${storedGeo.address}" — sin zona confirmada aún. Cuando necesites el costo de envío, llama a geocode_address con esta dirección (o con la dirección completa que el cliente proporcione).]`
-    } else if (storedGeo?.locationPin) {
+    // Only inject this context if the address or pin is not already present in the current session history or message.
+    const historyText = history.map(h => h.message).join(' ').toLowerCase()
+    const currentMsgLower = customerMessage.toLowerCase()
+    const addressInHistory = storedGeo?.address && (historyText.includes(storedGeo.address.toLowerCase()) || currentMsgLower.includes(storedGeo.address.toLowerCase()))
+    const pinInHistory = storedGeo?.locationPin && (
+      historyText.includes('ubicación compartida') || 
+      currentMsgLower.includes('ubicación compartida') || 
+      historyText.includes('maps.google') || 
+      currentMsgLower.includes('maps.google') || 
+      historyText.includes('google.com/maps') || 
+      currentMsgLower.includes('google.com/maps')
+    )
+
+    if (storedGeo?.address && storedGeo?.zone && !addressInHistory) {
+      enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una dirección registrada de una sesión anterior: "${storedGeo.address}". Al momento de pedir la dirección de entrega, ofrece primero esta opción: "¿Enviamos a tu dirección anterior — ${storedGeo.address} — o prefieres indicar una nueva? 📍". Si el cliente confirma, llama a geocode_address con esa dirección para obtener el costo exacto.]`
+    } else if (storedGeo?.address && !storedGeo?.zone && !addressInHistory) {
+      enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una dirección de referencia parcial guardada de una sesión anterior: "${storedGeo.address}" — sin zona confirmada aún. Cuando necesites el costo de envío, llama a geocode_address con esta dirección (o con la dirección completa que el cliente proporcione).]`
+    } else if (storedGeo?.locationPin && !pinInHistory) {
       const pinUrl = storedGeo.locationUrl || `https://www.google.com/maps?q=${storedGeo.locationPin.lat},${storedGeo.locationPin.lng}`
-      enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una ubicación guardada: ${pinUrl}. Si el cliente no menciona una nueva dirección, ofrece esta ubicación: "¿Enviamos a tu ubicación guardada — ${pinUrl} — o prefieres indicar una nueva? 📍". Si confirma, llama a resolve_maps_url con esa URL para obtener el costo.]`
+      enrichedMessage += `\n\n[SISTEMA: Este cliente tiene una ubicación guardada de una sesión anterior: ${pinUrl}. Si el cliente no menciona una nueva dirección, ofrece esta ubicación: "¿Enviamos a tu ubicación guardada — ${pinUrl} — o prefieres indicar una nueva? 📍". Si confirma, llama a resolve_maps_url con esa URL para obtener el costo.]`
     }
 
     // Business-hours check — uses DB data (businessHours) fetched above, so the schedule
@@ -543,7 +560,8 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     // Tool execution loop — runs until Claude produces a final text response
     const toolContext = {
       phone: customerPhone,
-      history
+      history,
+      currentMessage: customerMessage
     }
 
     while (response.stop_reason === 'tool_use') {
@@ -674,7 +692,13 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
           scheduledDate: claudeSnap.scheduledDate  || null,
           horarioEntrega:claudeSnap.horarioEntrega || null,
           fechaEnvio:    claudeSnap.scheduledDate
-                         || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Guayaquil' }),
+                         || (() => {
+                              const nowEc = nowInEcuador();
+                              const yyyy = nowEc.getFullYear();
+                              const mm = String(nowEc.getMonth() + 1).padStart(2, '0');
+                              const dd = String(nowEc.getDate()).padStart(2, '0');
+                              return `${yyyy}-${mm}-${dd}`;
+                            })(),
           // Address: prefer Claude's parsed address (matches what customer saw in summary).
           // Fall back to DB address for legacy orders that predate this field in <ORDEN>.
           address:       claudeSnap.address       || freshGeo?.address        || null,

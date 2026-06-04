@@ -3,7 +3,10 @@ require('dotenv').config({ path: path.resolve(__dirname, '../.env'), override: t
 const express = require('express')
 const axios = require('axios')
 const { processMessage, triggerZohoOnPayment, closeOrderSession, hasPendingOrder } = require('./agent')
-const { isBotPaused, pauseBot, resumeBot, getDeliveryZoneByCoordinates, saveDeliveryZoneOnly, saveDeliveryAddress, saveLocationPin, getPendingOrder, savePendingOrder, lookupDeliveryCost, clearPendingOrder, saveMessage, getOrCreateSession, saveCampanaMeta } = require('./memory')
+const { getDeliveryQuote } = require('./tools/micasaEnvios')
+const { isBotPaused, pauseBot, resumeBot, getDeliveryZoneByCoordinates, saveDeliveryZoneOnly, saveDeliveryAddress, saveLocationPin, getPendingOrder, savePendingOrder, lookupDeliveryCost, clearPendingOrder, saveMessage, getOrCreateSession, saveCampanaMeta, getHistory } = require('./memory')
+const { detectOrderTypeFromHistory, detectAlmuerzoQty } = require('./tools/order')
+const { estimateSubtotal } = require('./tools/geo')
 
 // Meta ad campaign codes embedded at the end of the ad's pre-filled message.
 // Detected on the customer's first message → saved to customers.campana_meta → passed to Zoho.
@@ -400,7 +403,25 @@ app.post('/webhook', async (req, res) => {
           console.warn('saveLocationPin failed (non-blocking):', err.message)
         )
 
-        const zoneResult = await getDeliveryZoneByCoordinates(lat, lng)
+        const existingOrder = await getPendingOrder(customerPhone).catch(() => null)
+        let orderType = existingOrder ? existingOrder.orderType : null
+        let almuerzoQty = existingOrder ? existingOrder.cantidad : null
+        let subtotal = existingOrder ? existingOrder.total : null
+
+        if (!existingOrder) {
+          const sid = await getOrCreateSession(customerPhone).catch(() => null)
+          const history = await getHistory(customerPhone, sid).catch(() => [])
+          orderType = detectOrderTypeFromHistory(history)
+          almuerzoQty = detectAlmuerzoQty(history)
+          subtotal = await estimateSubtotal(history, orderType, almuerzoQty)
+        }
+
+        const quote = await getDeliveryQuote({
+          address: `${lat},${lng}`,
+          orderType: orderType || 'carta',
+          almuerzoQty: almuerzoQty || 0,
+          subtotal: subtotal || 0
+        })
 
         // "📍 Ubicación compartida" is what Claude sees as the "customer message".
         // We intentionally do NOT include the geocoded formatted address here —
@@ -408,8 +429,8 @@ app.post('/webhook', async (req, res) => {
         // differs from what they recognise (e.g. "El Bosque, Quito 170132" vs
         // what they call their neighbourhood). Zone is still injected for pricing.
         let locationMessage = '📍 Ubicación compartida vía WhatsApp'
-        if (zoneResult) {
-          const { zone, distanceKm, formattedAddress } = zoneResult
+        if (quote) {
+          const { zone, distance_km: distanceKm } = quote
 
           // Save zone + distance only — the customer's typed text address is the
           // human reference for Zoho. Pin is used for delivery zone calculation only.
@@ -420,12 +441,10 @@ app.post('/webhook', async (req, res) => {
           // Bug 4 Part B: Detect delivery cost change when a location pin changes the zone
           // AFTER an order summary was already shown. If cost differs, tell Claude to show updated summary.
           let costChangeWarning = ''
-          const existingOrder = await getPendingOrder(customerPhone).catch(() => null)
           if (existingOrder && existingOrder.deliveryCost !== null && existingOrder.deliveryCost !== undefined) {
-            const newCost = await lookupDeliveryCost(zone, existingOrder.orderType, existingOrder.total, existingOrder.cantidad).catch(() => null)
-            if (newCost !== null && newCost !== existingOrder.deliveryCost) {
-              console.log(`[location handler] Bug 4: delivery cost changed! Old=$${existingOrder.deliveryCost} → New=$${newCost} (zone ${zone})`)
-              costChangeWarning = ` ⚠️ IMPORTANTE: El costo de envío cambió de $${existingOrder.deliveryCost.toFixed(2)} a $${newCost.toFixed(2)} con esta nueva ubicación. DEBES mostrar un resumen ACTUALIZADO con el nuevo costo de envío y total ANTES de pedir confirmación. NO uses el resumen anterior.`
+            if (quote.delivery_gross !== null && quote.delivery_gross !== existingOrder.deliveryCost) {
+              console.log(`[location handler] Bug 4: delivery cost changed! Old=$${existingOrder.deliveryCost} → New=$${quote.delivery_gross} (zone ${zone})`)
+              costChangeWarning = ` ⚠️ IMPORTANTE: El costo de envío cambió de $${existingOrder.deliveryCost.toFixed(2)} a $${quote.delivery_gross.toFixed(2)} con esta nueva ubicación. DEBES mostrar un resumen ACTUALIZADO con el nuevo costo de envío y total ANTES de pedir confirmación. NO uses el resumen anterior.`
               // Clear the stale pending_order so a fresh <ORDEN> is generated
               clearPendingOrder(customerPhone).catch(() => {})
             }
@@ -434,7 +453,7 @@ app.post('/webhook', async (req, res) => {
           // Inject zone for delivery pricing — geocoded address is intentionally
           // omitted from what Claude sees (stored internally for Zoho only via log).
           locationMessage += `\n\n[SISTEMA: Pin de ubicación recibido | Distancia: ${distanceKm}km → Zona ${zone}. NO mencionar zona al cliente. NO mostrar dirección geocodificada al cliente.${costChangeWarning}]`
-          console.log(`[location handler] Zone ${zone} (${distanceKm}km) | geocoded="${formattedAddress}" (NOT sent to Claude)`)
+          console.log(`[location handler] Zone ${zone} (${distanceKm}km) | (NOT sent to Claude)`)
         } else {
           console.warn('[location handler] Reverse-geocoding failed — passing pin to Claude without zone')
         }
@@ -493,35 +512,15 @@ app.post('/webhook', async (req, res) => {
     // 3-second cooldown starts when the customer can actually see the response.
     processingPhones.add(customerPhone)
 
-    // Deterministic override: ANY weekend almuerzo inquiry → immediate HANDOFF (no Claude call needed)
-    // Weekend almuerzo menu is not pre-programmed — a human must confirm what's available.
-    const dow = new Date(Date.now() - 5 * 60 * 60 * 1000).getDay() // Ecuador UTC-5, 0=Sun, 6=Sat
-    const isWeekend = dow === 0 || dow === 6
-    const msgLower = customerMessage.toLowerCase()
-    const mentionsAlmuerzo = msgLower.includes('almuerzo') || msgLower.includes('almuerzos')
-    const isAlmuerzoOrderOnWeekend = isWeekend && mentionsAlmuerzo
-
     let reply, needsHandoff, needsPaymentHandoff
-    if (isAlmuerzoOrderOnWeekend) {
-      console.log(`Weekend almuerzo order detected — bypassing Claude, sending HANDOFF`)
-      reply = '¡Con gusto! En un momento te confirmamos el menú del día y los detalles de tu pedido. 😊'
-      needsHandoff = true
-      needsPaymentHandoff = false
+    try {
+      ;({ reply, needsHandoff, needsPaymentHandoff } = await processMessage(
+        customerPhone,
+        customerMessage,
+        customerName
+      ))
+    } finally {
       processingPhones.delete(customerPhone)
-      // Save messages to history
-      const { saveMessage } = require('./memory')
-      await saveMessage(customerPhone, 'user', customerMessage)
-      await saveMessage(customerPhone, 'assistant', reply)
-    } else {
-      try {
-        ;({ reply, needsHandoff, needsPaymentHandoff } = await processMessage(
-          customerPhone,
-          customerMessage,
-          customerName
-        ))
-      } finally {
-        processingPhones.delete(customerPhone)
-      }
     }
 
     // Send reply to customer
@@ -623,6 +622,21 @@ async function notifyHandoff(customerPhone, customerName, type, lastMessage) {
   await sendWatiMessage(adminPhone, notification)
   console.log(`${type} HANDOFF notified to admin (${adminPhone}) for customer: ${customerPhone}`)
 }
+
+// ---------------------------------------------------------------------------
+// Process-level crash guards.
+// The webhook flow makes many fire-and-forget async calls. On Node >=15 a
+// single unhandled promise rejection terminates the whole process, which takes
+// the bot down for ALL customers and (under Railway's restart policy) shows up
+// only as a silent restart with no stack trace. We log the full error so the
+// root cause is visible in Railway, and keep the process alive — one bad
+// message must never crash the bot for everyone.
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[FATAL] Unhandled promise rejection — process kept alive:', reason)
+})
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] Uncaught exception — process kept alive:', err)
+})
 
 const PORT = process.env.PORT || 3000
 app.listen(PORT, () => {

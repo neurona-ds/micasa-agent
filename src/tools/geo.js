@@ -7,9 +7,12 @@ const {
   saveRawAddress,
   saveDeliveryZoneOnly,
   saveLocationPin,
-  lookupDeliveryCost
+  lookupDeliveryCost,
+  getAllConfig,
+  getProducts
 } = require('../memory')
 const { detectOrderTypeFromHistory, detectAlmuerzoQty } = require('./order')
+const { getDeliveryQuote } = require('./micasaEnvios')
 
 /**
  * Tool schemas passed to every Claude API call.
@@ -47,6 +50,54 @@ const GEOCODING_TOOLS = [
 ]
 
 /**
+ * Estimate the subtotal of the current order based on the conversation history
+ * so that we can pass it to the delivery quote API for minimum order checking.
+ */
+async function estimateSubtotal(history, orderType, qty) {
+  let subtotal = 0
+  const config = await getAllConfig().catch(() => ({}))
+  const products = await getProducts().catch(() => [])
+
+  if (orderType === 'almuerzo' || orderType === 'mixed') {
+    const almuerzoPrice = parseFloat(config.almuerzo_price_delivery || '5.50')
+    subtotal += qty * almuerzoPrice
+  }
+
+  if (orderType === 'carta' || orderType === 'mixed') {
+    const recentUserMsgs = history.filter(h => h.role === 'user').slice(-10)
+    const combinedText = recentUserMsgs.map(h => h.message.toLowerCase()).join(' ')
+    
+    for (const prod of products) {
+      if (combinedText.includes(prod.name.toLowerCase())) {
+        const escapedName = prod.name.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&')
+        const regex = new RegExp(`(\\d+|un|una|dos|tres|cuatro|cinco)?\\s*${escapedName}`, 'i')
+        const match = combinedText.match(regex)
+        let prodQty = 1
+        if (match && match[1]) {
+          const rawQty = match[1].toLowerCase()
+          if (/^\d+$/.test(rawQty)) {
+            prodQty = parseInt(rawQty)
+          } else if (rawQty === 'un' || rawQty === 'una') {
+            prodQty = 1
+          } else if (rawQty === 'dos') {
+            prodQty = 2
+          } else if (rawQty === 'tres') {
+            prodQty = 3
+          } else if (rawQty === 'cuatro') {
+            prodQty = 4
+          } else if (rawQty === 'cinco') {
+            prodQty = 5
+          }
+        }
+        subtotal += prodQty * parseFloat(prod.price)
+      }
+    }
+  }
+
+  return subtotal
+}
+
+/**
  * Execute a geocoding tool call from Claude.
  * Returns a plain object that is JSON-serialized and sent back as tool_result.
  *
@@ -55,118 +106,133 @@ const GEOCODING_TOOLS = [
  * @param {object} context  - { phone, history }
  */
 async function executeGeoTool(toolName, input, context) {
-  const { phone, history } = context
+  const { phone, history, currentMessage } = context
+
+  const fullHistory = [...history]
+  if (currentMessage) {
+    fullHistory.push({ role: 'user', message: currentMessage })
+  }
+
+  const orderType = detectOrderTypeFromHistory(fullHistory)
+  const qty = detectAlmuerzoQty(fullHistory)
+  const subtotal = await estimateSubtotal(fullHistory, orderType, qty)
 
   if (toolName === 'geocode_address') {
     const address = input.address
-    console.log(`[tool:geocode_address] Geocoding: "${address}"`)
+    console.log(`[tool:geocode_address] Geocoding via API: "${address}" (subtotal: $${subtotal})`)
 
-    const result = await getDeliveryZoneByAddress(address).catch(() => null)
+    const quote = await getDeliveryQuote({
+      address,
+      orderType,
+      almuerzoQty: qty,
+      subtotal
+    })
 
-    if (!result) {
+    if (!quote) {
       saveRawAddress(phone, address).catch(() => {})
       return { success: false, error: 'Could not geocode this address. Ask the customer for a more specific reference (cross street, landmark, or Google Maps pin).' }
     }
 
-    console.log(`[tool:geocode_address] Raw result: locationType=${result.locationType} zone=${result.zone} dist=${result.distanceKm}km formattedAddress="${result.formattedAddress}"`)
+    console.log(`[tool:geocode_address] API result: ok=${quote.ok} zone=${quote.zone} dist=${quote.distance_km}km`)
 
-    // GEOMETRIC_CENTER on a street intersection is precise enough — Google places it at
-    // the exact cross-street point, it just can't assign a "rooftop" there.
-    // Treat intersections as high-confidence even when locationType=GEOMETRIC_CENTER.
-    const isIntersection = /\s(y|&|and)\s/i.test(result.formattedAddress) || /\s(y|&)\s/i.test(address)
-    const isLowConfidence = result.locationType === 'APPROXIMATE' ||
-      (result.locationType === 'GEOMETRIC_CENTER' && !isIntersection)
+    if (quote.ok === false) {
+      if (quote.error === 'ZONE_4_HANDOFF' || quote.zone === 4) {
+        saveDeliveryAddress(phone, address, 4, quote.distance_km).catch(() => {})
+        return {
+          success: true,
+          zone: 4,
+          distanceKm: quote.distance_km,
+          formattedAddress: address,
+          isZone4: true,
+          instruction: 'ZONA 4 — outside delivery range. Respond EXACTLY: "¡Claro! Permíteme un momento, estamos verificando el costo de envío para tu sector 🔍 En breve un asesor te confirma los detalles." then emit HANDOFF.'
+        }
+      }
 
-    if (isLowConfidence) {
-      console.warn(`[tool:geocode_address] Low confidence — locationType=${result.locationType} isIntersection=${isIntersection} for input "${address}" → resolved to "${result.formattedAddress}"`)
+      if (quote.error === 'BELOW_MIN_ORDER') {
+        saveRawAddress(phone, address).catch(() => {})
+        return {
+          success: false,
+          error: `El pedido mínimo para este sector es de $${quote.min_order}. Tu subtotal actual es menor. Por favor agrega más productos.`
+        }
+      }
+
       saveRawAddress(phone, address).catch(() => {})
       return {
         success: false,
-        lowConfidence: true,
-        formattedAddress: result.formattedAddress,
-        error: `Address "${result.formattedAddress}" is not precise enough. If the address contains a house number (e.g. N34-401), call geocode_address again with ONLY the street intersection (e.g. "Guanguiltagua y Federico Paez"). Otherwise ask the customer for a Google Maps pin.`
+        error: 'Address is not precise enough or invalid. Ask the customer for a more specific reference (cross street, landmark, or Google Maps pin).'
       }
     }
 
-    const { zone, distanceKm, formattedAddress } = result
-
-    if (zone === 4 || zone === '4') {
-      saveDeliveryAddress(phone, address, zone, distanceKm).catch(() => {})
-      return {
-        success: true,
-        zone: 4,
-        distanceKm,
-        formattedAddress,
-        isZone4: true,
-        instruction: 'ZONA 4 — outside delivery range. Respond EXACTLY: "¡Claro! Permíteme un momento, estamos verificando el costo de envío para tu sector 🔍 En breve un asesor te confirma los detalles." then emit HANDOFF.'
-      }
-    }
-
-    const orderType = detectOrderTypeFromHistory(history)
-    const qty = detectAlmuerzoQty(history)
-    const deliveryCost = await lookupDeliveryCost(zone, orderType, null, orderType === 'almuerzo' ? qty : null).catch(() => null)
-
-    saveDeliveryAddress(phone, address, zone, distanceKm).catch(() => {})
+    saveDeliveryAddress(phone, address, quote.zone, quote.distance_km).catch(() => {})
 
     return {
       success: true,
-      zone,
-      distanceKm,
-      formattedAddress,
-      deliveryCost,
+      zone: quote.zone,
+      distanceKm: quote.distance_km,
+      formattedAddress: address,
+      deliveryCost: quote.delivery_gross,
       isZone4: false,
-      instruction: `Use deliveryCost $${deliveryCost != null ? deliveryCost.toFixed(2) : '(see zone tables)'} exactly. Do NOT calculate or estimate a different price. Zone number must NEVER be shown to the customer.`
+      instruction: `Use deliveryCost $${quote.delivery_gross != null ? quote.delivery_gross.toFixed(2) : '0.00'} exactly. Do NOT calculate or estimate a different price. Zone number must NEVER be shown to the customer.`
     }
   }
 
   if (toolName === 'resolve_maps_url') {
     const url = input.url
-    console.log(`[tool:resolve_maps_url] Resolving: "${url}"`)
+    console.log(`[tool:resolve_maps_url] Resolving via API: "${url}" (subtotal: $${subtotal})`)
 
-    const coords = await resolveGoogleMapsUrl(url).catch(() => null)
-    const zoneResult = coords
-      ? await getDeliveryZoneByCoordinates(coords.lat, coords.lng).catch(() => null)
-      : await getDeliveryZoneByAddress(url).catch(() => null)
+    const quote = await getDeliveryQuote({
+      address: url,
+      orderType,
+      almuerzoQty: qty,
+      subtotal
+    })
 
-    if (!zoneResult) {
+    if (!quote) {
       return { success: false, error: 'Could not determine delivery zone from this Maps URL. Ask the customer to type their address instead.' }
     }
 
-    const { zone, distanceKm } = zoneResult
-
-    if (coords) {
-      saveLocationPin(phone, coords.lat, coords.lng).catch(() => {})
+    if (quote.coords) {
+      saveLocationPin(phone, quote.coords.lat, quote.coords.lng).catch(() => {})
     }
-    saveDeliveryZoneOnly(phone, zone, distanceKm).catch(() => {})
 
-    if (zone === 4 || zone === '4') {
-      return {
-        success: true,
-        zone: 4,
-        distanceKm,
-        isZone4: true,
-        locationUrl: coords ? `https://www.google.com/maps?q=${coords.lat},${coords.lng}` : url,
-        instruction: 'ZONA 4 — outside delivery range. Respond EXACTLY: "¡Claro! Permíteme un momento, estamos verificando el costo de envío para tu sector 🔍 En breve un asesor te confirma los detalles." then emit HANDOFF.'
+    if (quote.ok === false) {
+      if (quote.error === 'ZONE_4_HANDOFF' || quote.zone === 4) {
+        saveDeliveryZoneOnly(phone, 4, quote.distance_km).catch(() => {})
+        return {
+          success: true,
+          zone: 4,
+          distanceKm: quote.distance_km,
+          isZone4: true,
+          locationUrl: quote.coords ? `https://www.google.com/maps?q=${quote.coords.lat},${quote.coords.lng}` : url,
+          instruction: 'ZONA 4 — outside delivery range. Respond EXACTLY: "¡Claro! Permíteme un momento, estamos verificando el costo de envío para tu sector 🔍 En breve un asesor te confirma los detalles." then emit HANDOFF.'
+        }
       }
+
+      if (quote.error === 'BELOW_MIN_ORDER') {
+        return {
+          success: false,
+          error: `El pedido mínimo para este sector es de $${quote.min_order}. Tu subtotal actual es menor. Por favor agrega más productos.`
+        }
+      }
+
+      return { success: false, error: 'Could not determine delivery zone from this Maps URL. Ask the customer to type their address instead.' }
     }
 
-    const orderType = detectOrderTypeFromHistory(history)
-    const qty = detectAlmuerzoQty(history)
-    const deliveryCost = await lookupDeliveryCost(zone, orderType, null, orderType === 'almuerzo' ? qty : null).catch(() => null)
-    const locationUrl = coords ? `https://www.google.com/maps?q=${coords.lat},${coords.lng}` : url
+    saveDeliveryZoneOnly(phone, quote.zone, quote.distance_km).catch(() => {})
+    const locationUrl = quote.coords ? `https://www.google.com/maps?q=${quote.coords.lat},${quote.coords.lng}` : url
 
     return {
       success: true,
-      zone,
-      distanceKm,
-      deliveryCost,
+      zone: quote.zone,
+      distanceKm: quote.distance_km,
+      deliveryCost: quote.delivery_gross,
       isZone4: false,
       locationUrl,
-      instruction: `Use deliveryCost $${deliveryCost != null ? deliveryCost.toFixed(2) : '(see zone tables)'} exactly. In the order summary write the address as "📍 ${url}". Do NOT show zone number to customer.`
+      instruction: `Use deliveryCost $${quote.delivery_gross != null ? quote.delivery_gross.toFixed(2) : '0.00'} exactly. In the order summary write the address as "📍 ${url}". Do NOT show zone number to customer.`
     }
   }
 
   return { success: false, error: `Unknown tool: ${toolName}` }
 }
 
-module.exports = { GEOCODING_TOOLS, executeGeoTool }
+module.exports = { GEOCODING_TOOLS, executeGeoTool, estimateSubtotal }
