@@ -1,0 +1,137 @@
+---
+paths:
+  - "src/tools/order.js"
+---
+
+# Business Logic — Order Flow, Sessions, Handoffs
+
+Core business rules for the WhatsApp sales agent.
+
+## Delivery Zones (4 Zones)
+
+Calculated by Haversine straight-line distance from restaurant:
+**América y Juan José de Villalengua, Quito: `-0.1723433, -78.4910016`**
+
+| Zone | Distance | Carta Delivery | Almuerzo Delivery |
+|---|---|---|---|
+| 1 | 0–2 km | Tiered by order value | 1 = $0.50, 2+ = FREE |
+| 2 | 2–4 km | Tiered by order value | 1 = $1.50, 2+ = $1.00 |
+| 3 | 4–6 km | Tiered by order value | 1 = $2.50, 2+ = $2.00 |
+| 4 | 6+ km | **ALWAYS HANDOFF** | Supervisor quotes manually |
+
+**Zone numbers are NEVER shown to customers.** Always injected as `[SISTEMA]` tags.
+
+## Order Flow Steps
+
+```
+PASO 1: Greeting (brief, no menu spam)
+
+PASO 2: Answer query (menu link, prices, hours, delivery cost)
+
+PASO 3: Order flow
+  a) Build item list (accumulative, never delete items)
+  b) Ask: delivery or in-person?
+  c) In-person → close conversation (no payment via bot)
+  d) Delivery → ask address (if not stored)
+  e) Show summary: items + subtotal + delivery + TOTAL
+     + emit <ORDEN>{...}</ORDEN> JSON block
+  f) Ask: "Confirmas tu pedido?" (MANDATORY — never skip)
+
+PASO 4: Payment
+  - Send bank accounts + amount
+  - Ask for payment screenshot
+  - On receipt → HANDOFF_PAYMENT
+
+PASO 5: Handoff triggers (escalation, complaints, order status)
+```
+
+## Session Management
+
+- Sessions are UUIDs stored in `customers.current_session_id`
+- **Expires after 6 hours** of inactivity (`SESSION_EXPIRY_MS`)
+- `getOrCreateSession()` returns existing session or creates new one
+- All `saveMessage()` and `getHistory()` calls are scoped to session ID
+- Prevents old completed orders from leaking into Claude's context
+- Sessions end via `endSession()` only when operator sends "Orden Confirmada"
+- Automatic expiry handles customers who return the next day
+
+## Bot Pause/Resume
+
+### Automatic Pause Triggers
+- `HANDOFF` token in Claude response
+- `HANDOFF_PAYMENT` token in Claude response
+- Human operator sends message in WATI
+- Customer sends payment image
+
+### Automatic Resume Triggers
+- WATI conversation assigned to bot account
+- `#resume` command from operator
+- Operator provides delivery cost/zone info
+- Operator sends "Orden Confirmada"
+
+### While Paused
+Customer text messages are still saved to conversation history so Claude has full context when resumed.
+
+## HANDOFF and HANDOFF_PAYMENT
+
+Claude emits these tokens in reply text. Coordinator strips them before sending to customer.
+
+| Token | What it triggers |
+|---|---|
+| `HANDOFF` | `notifyHandoff(GENERAL)` + `pauseBot()` |
+| `HANDOFF_PAYMENT` | `notifyHandoff(PAYMENT)` + `createZohoDeliveryRecord()` + `clearPendingOrder()` + `pauseBot()` |
+
+Zone 4 triggers HANDOFF immediately when address is identified — no order summary shown.
+
+## Weekend Almuerzo — Deterministic HANDOFF
+
+Before any Claude call:
+- If current day is Saturday or Sunday
+- AND message mentions "almuerzo"
+- → Hardcoded HANDOFF is fired
+- Claude is never called
+- Weekend menu is not programmed — human must confirm availability
+
+## src/tools/order.js Functions
+
+| Function | What it does |
+|---|---|
+| `detectOrderTypeFromHistory(history)` | Returns `'almuerzo'`, `'carta'`, or `'mixed'` based on messages |
+| `detectAlmuerzoQty(history)` | Returns integer count from messages. Defaults to 1. |
+| `parseScheduledDate(dateStr)` | Parses Spanish date string → `YYYY-MM-DD` |
+| `extractAddressFromHistory(history)` | Scans for user reply after "dirección completa" |
+| `extractTurnoFromHistory(history)` | Scans recent history for turno/hora mention |
+| `extractOrderDataForZoho(...)` | Parses summary into `orderData` (legacy path) |
+
+## Quantity & Delivery Auto-Detection (REGLA INQUEBRANTABLE)
+
+To keep checkout flow smooth:
+
+### Quantity Auto-Detection
+- Singular articles (`"un"`, `"una"`, `"uno"`) → quantity `1`
+- Claude is **prohibited** from asking "¿Cuántos almuerzos necesitas?" if quantity is implied
+
+### Delivery Choice Bypasses
+- Customer provides address upfront → assume delivery
+- Customer asks for delivery → skip local vs. delivery confirmation
+- Go straight to geocoding
+
+### Conditional Stored Address Injection
+- Stored address hints only injected if NOT already in current session
+- Prevents bot from offering to confirm an address just typed
+
+## Daily vs. Weekly Menu Rules
+
+### Today's Menu Only
+Show only current day's menu when:
+- Customer asks for today's menu
+- Customer initiates lunch order
+- Generic request ("¿Cuál es el menú?", "quiero un almuerzo")
+
+### Weekly Menu Only
+Show full 5-day menu ONLY when explicitly requested:
+- `"semana"`, `"semanal"`, `"weekly"`, `"toda la semana"`
+
+### Specific Day Menu
+If customer requests specific day ("para el lunes", "para mañana viernes"):
+- Show only that day's menu
