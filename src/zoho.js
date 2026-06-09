@@ -277,4 +277,113 @@ async function createZohoDeliveryRecord(orderData) {
   throw new Error(`Zoho delivery record creation failed: ${JSON.stringify(result)}`)
 }
 
-module.exports = { createZohoDeliveryRecord }
+// ─── Plan turno → Deals Horario_de_Entrega pick-list ─────────────────────────
+// The Deals module ONLY has the 3 almuerzo slots (no "Inmediato"). Return a valid
+// slot or null (so the field is omitted rather than rejected).
+function mapTurnoToDealSlot(turno) {
+  if (!turno) return null
+  const t = turno.toString().trim()
+  if (/12[:\s]?30/.test(t))            return '12:30 a 1:30'
+  if (/1[:\s]?30|13[:\s]?30/.test(t))  return '1:30 a 2:30'
+  if (/2[:\s]?30|14[:\s]?30/.test(t))  return '2:30 a 3:30'
+  return null
+}
+
+// ─── Deal creation (prepaid lunch PLANS) ─────────────────────────────────────
+
+/**
+ * Create a Zoho **Deal** for a prepaid lunch plan (NOT a Planificacion_de_Entregas
+ * record — that's for single same-day orders). Fired on payment, same trigger point
+ * as createZohoDeliveryRecord, but routed here when orderData.orderType === 'plan'.
+ *
+ * Field mapping (see .claude/rules/zoho.md):
+ *   total (grandTotal, incl. shipping) → Amount
+ *   cantidad (totalLunches)            → Almuerzos_Comprados + Almuerzos_Restantes
+ *   address                            → Direccion_de_Envio
+ *   locationUrl/locationPin            → Ubicacion
+ *   turno                              → Horario_de_Entrega (valid slot or omitted)
+ *   itemsText (plan breakdown)         → Notas_de_Entrega
+ *   Stage = 'Pendiente de Pago' (human flips to 'Pago Confirmado' after verifying).
+ *   No automation/workflow is triggered. A human creates the daily PE records manually.
+ *
+ * @param {Object} orderData  pending_order snapshot with orderType:'plan'
+ */
+async function createZohoDealRecord(orderData) {
+  const token      = await getZohoAccessToken()
+  const apiDomain  = process.env.ZOHO_API_DOMAIN || 'https://www.zohoapis.com'
+  const moduleName = process.env.ZOHO_DEALS_MODULE_API_NAME || 'Deals'
+
+  // Step 1: look up or create the contact (reuse the same helpers as deliveries)
+  let contact = await lookupZohoContact(orderData.phone)
+  if (!contact) {
+    const newId = await createZohoContact(orderData.phone, orderData.customerName)
+    contact = { id: newId, name: orderData.customerName }
+  }
+
+  // Ecuador local date/time (UTC-5), timezone-independent
+  const utcMs = Date.now()
+  const nowEc = new Date(utcMs + (-5 * 60 * 60 * 1000) + (new Date(utcMs - 5 * 60 * 60 * 1000).getTimezoneOffset() * 60 * 1000))
+  const yyyy = nowEc.getFullYear()
+  const mm = String(nowEc.getMonth() + 1).padStart(2, '0')
+  const dd = String(nowEc.getDate()).padStart(2, '0')
+  const HH = String(nowEc.getHours()).padStart(2, '0')
+  const MI = String(nowEc.getMinutes()).padStart(2, '0')
+  const today    = `${yyyy}-${mm}-${dd}`
+  const nowIso   = `${today}T${HH}:${MI}:00-05:00`
+
+  const lunches  = orderData.cantidad != null ? Number(orderData.cantidad) : null
+  // Tipo_de_Plan picklist only has these two values; omit for custom totals.
+  const tipoDePlan = lunches === 5 ? 'Plan Semanal 5'
+                   : lunches === 20 ? 'Plan Mensual 20'
+                   : null
+  const tipoLabel  = lunches === 5 ? 'Semanal' : lunches === 20 ? 'Mensual' : 'Personalizado'
+  const slot       = mapTurnoToDealSlot(orderData.turno || orderData.horarioEntrega)
+
+  const ubicacion = orderData.locationUrl
+    || (orderData.locationPin?.lat != null
+        ? `https://www.google.com/maps?q=${orderData.locationPin.lat},${orderData.locationPin.lng}`
+        : '')
+
+  const record = {
+    Deal_Name:           `Plan ${tipoLabel} - ${contact.name} - ${today}`,
+    Stage:               'Pendiente de Pago',
+    Amount:              orderData.total ?? 0,            // grandTotal, shipping included
+    Contact_Name:        { id: contact.id },
+    Telefono:            orderData.phone,
+    Estado_del_Plan:     'Activo',
+    Fecha_de_Activaci_n: nowIso,
+    Direccion_de_Envio:  orderData.address || '',
+    Ubicacion:           ubicacion,
+    Notas_de_Entrega:    orderData.itemsText || '',
+    // No Fuente field on Deals — mark bot origin in the internal notes for the operator.
+    Notas_Internas:      `Origen: WhatsAppBot (plan cotizado por el bot). Envío incluido en el total.`,
+    ...(lunches != null && { Almuerzos_Comprados: lunches, Almuerzos_Restantes: lunches }),
+    ...(tipoDePlan && { Tipo_de_Plan: tipoDePlan }),
+    ...(slot && { Horario_de_Entrega: slot }),
+    ...(orderData.campana && { Campana_Meta: orderData.campana })
+  }
+
+  // POST WITHOUT trigger → no workflow/automation fires (per spec).
+  const response = await axios.post(
+    `${apiDomain}/crm/v2/${moduleName}`,
+    { data: [record] },
+    {
+      headers: {
+        Authorization:  `Zoho-oauthtoken ${token}`,
+        'Content-Type': 'application/json'
+      },
+      timeout: 10_000
+    }
+  )
+
+  const result = response.data?.data?.[0]
+  if (result?.code === 'SUCCESS') {
+    const recordId = result.details?.id
+    console.log(`Zoho: DEAL created — ${record.Deal_Name} (${recordId})`)
+    return recordId
+  }
+
+  throw new Error(`Zoho deal creation failed: ${JSON.stringify(result)}`)
+}
+
+module.exports = { createZohoDeliveryRecord, createZohoDealRecord }

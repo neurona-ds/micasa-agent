@@ -5,7 +5,9 @@ paths:
 
 # Zoho CRM Integration — src/zoho.js
 
-OAuth2 authentication and record creation for `Planificacion_de_Entregas` custom module.
+OAuth2 authentication and record creation. Two write targets, routed by `orderData.orderType`:
+- **`Planificacion_de_Entregas`** (single same-day orders) → `createZohoDeliveryRecord`
+- **`Deals`** (prepaid lunch **plans**) → `createZohoDealRecord`
 
 ## Functions
 
@@ -14,8 +16,41 @@ OAuth2 authentication and record creation for `Planificacion_de_Entregas` custom
 | `getZohoAccessToken()` | Returns valid OAuth2 token. Caches in-memory, refreshes via refresh_token when expired. |
 | `lookupZohoContact(phone)` | Searches Contacts by phone. Returns `{ id, name }` or `null`. |
 | `createZohoContact(phone, name)` | Creates Zoho Contact. Returns new contact `id`. |
-| `mapTurnoToPickList(turno)` | Maps raw turno to Zoho pick-list value. |
-| `createZohoDeliveryRecord(orderData)` | Main entry: looks up/creates Contact, creates delivery record. Returns record ID. |
+| `mapTurnoToPickList(turno)` | Maps raw turno to Zoho pick-list value (deliveries). |
+| `mapTurnoToDealSlot(turno)` | Maps turno to a valid Deals slot (the 3 almuerzo slots) or `null`. |
+| `createZohoDeliveryRecord(orderData)` | Single-order path → `Planificacion_de_Entregas`. Returns record ID. |
+| `createZohoDealRecord(orderData)` | **Plan path** → `Deals`. Returns Deal ID. |
+
+## Routing (coordinator.js)
+
+On payment (`HANDOFF_PAYMENT` text **or** comprobante image → `triggerZohoOnPayment`):
+```
+if (orderData.orderType === 'plan') createZohoDealRecord(orderData)
+else                                createZohoDeliveryRecord(orderData)
+```
+For plans, the per-delivery `shippingTotal` in `deliveryCost` is NOT overwritten by a DB
+zone lookup (the guard skips the lookup when `orderType === 'plan'`).
+
+## Deals — Plan Field Mapping (`createZohoDealRecord`)
+
+| Snapshot field | Deals API field | Notes |
+|---|---|---|
+| `total` (grandTotal, incl. shipping) | `Amount` | one money field — shipping is included, not separate |
+| `cantidad` (totalLunches) | `Almuerzos_Comprados` + `Almuerzos_Restantes` | both set to total at creation |
+| 5 → `Plan Semanal 5`, 20 → `Plan Mensual 20` | `Tipo_de_Plan` | omitted for custom totals |
+| — | `Estado_del_Plan` = `Activo` | |
+| — | `Stage` = `Pendiente de Pago` | human flips to `Pago Confirmado` after verifying |
+| `address` | `Direccion_de_Envio` | |
+| `locationUrl`/`locationPin` | `Ubicacion` | |
+| `turno` | `Horario_de_Entrega` | valid slot or omitted (no `Inmediato` on Deals) |
+| `itemsText` | `Notas_de_Entrega` | plan breakdown summary |
+| — | `Notas_Internas` | marks `Origen: WhatsAppBot` (no `Fuente` field on Deals) |
+| now (Ecuador) | `Fecha_de_Activaci_n` | ISO with `-05:00` |
+| — | `Contact_Name` | Contact lookup ID |
+
+**No workflow trigger** on the Deal POST (no automation). A human creates the daily
+`Planificacion_de_Entregas` records manually from the registered Deal.
+Module API name overridable via `ZOHO_DEALS_MODULE_API_NAME` (default `Deals`).
 
 ## Zoho Record Creation Flow
 

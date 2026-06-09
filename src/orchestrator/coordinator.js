@@ -1,6 +1,6 @@
 const Anthropic = require('@anthropic-ai/sdk')
 const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getAlmuerzoDeliveryTiers, getDeliveryZoneByAddress, getCurrentCycle, getWeekAlmuerzos, getPaymentMethods, saveDeliveryAddress, saveRawAddress, getCustomerAddress, getBusinessHours, lookupDeliveryCost, savePendingOrder, getPendingOrder, clearPendingOrder, getOrCreateSession, endSession } = require('../memory')
-const { createZohoDeliveryRecord } = require('../zoho')
+const { createZohoDeliveryRecord, createZohoDealRecord } = require('../zoho')
 const { detectOrderTypeFromHistory, detectAlmuerzoQty, extractOrderDataForZoho, parseScheduledDate } = require('../tools/order')
 const { GEOCODING_TOOLS, executeGeoTool } = require('../tools/geo')
 const fs   = require('fs')
@@ -784,10 +784,18 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       // ─────────────────────────────────────────────────────────────────────────
 
       if (orderData) {
-        console.log('Zoho: firing delivery record creation for', customerPhone, orderData)
-        createZohoDeliveryRecord(orderData).catch(err =>
-          console.error('Zoho delivery record failed (non-blocking):', err.message)
-        )
+        // Route: plans → Zoho Deal; everything else → Planificacion_de_Entregas.
+        if (orderData.orderType === 'plan') {
+          console.log('Zoho: firing DEAL creation (plan) for', customerPhone, orderData)
+          createZohoDealRecord(orderData).catch(err =>
+            console.error('Zoho deal creation failed (non-blocking):', err.message)
+          )
+        } else {
+          console.log('Zoho: firing delivery record creation for', customerPhone, orderData)
+          createZohoDeliveryRecord(orderData).catch(err =>
+            console.error('Zoho delivery record failed (non-blocking):', err.message)
+          )
+        }
         // Clear the order snapshot so follow-up images don't re-trigger Zoho.
         // Session stays open — it will be closed by closeOrderSession() when the
         // operator sends "📦 Orden Confirmada" to the customer.
@@ -858,7 +866,9 @@ async function triggerZohoOnPayment(customerPhone, customerName) {
       if (!addressChanged && freshGeo.locationUrl) orderData.locationUrl = freshGeo.locationUrl
       if (freshGeo.customerName) orderData.customerName = freshGeo.customerName
       if (freshGeo.campana)      orderData.campana      = freshGeo.campana      // Meta ad campaign
-      if (freshGeo.zone) {
+      // Plans carry their own per-delivery shipping total (shippingTotal); never overwrite
+      // it with a single-delivery zone lookup. Only re-derive cost for normal orders.
+      if (freshGeo.zone && orderData.orderType !== 'plan') {
         const authCost = await lookupDeliveryCost(freshGeo.zone, orderData.orderType, orderData.total, orderData.cantidad).catch(() => null)
         if (authCost !== null) {
           console.log(`triggerZohoOnPayment: deliveryCost from DB — zone=${freshGeo.zone} → $${authCost}`)
@@ -867,10 +877,17 @@ async function triggerZohoOnPayment(customerPhone, customerName) {
       }
     }
 
-    console.log('Zoho: firing delivery record (payment image received) for', customerPhone, orderData)
-    createZohoDeliveryRecord(orderData).catch(err =>
-      console.error('Zoho delivery record failed (non-blocking):', err.message)
-    )
+    if (orderData.orderType === 'plan') {
+      console.log('Zoho: firing DEAL creation (payment image received, plan) for', customerPhone, orderData)
+      createZohoDealRecord(orderData).catch(err =>
+        console.error('Zoho deal creation failed (non-blocking):', err.message)
+      )
+    } else {
+      console.log('Zoho: firing delivery record (payment image received) for', customerPhone, orderData)
+      createZohoDeliveryRecord(orderData).catch(err =>
+        console.error('Zoho delivery record failed (non-blocking):', err.message)
+      )
+    }
     // Clear the order snapshot so follow-up images don't re-trigger Zoho.
     // Session stays open — it will be closed by closeOrderSession() when the
     // operator sends "📦 Orden Confirmada" to the customer.

@@ -41,10 +41,13 @@ Called for **prepaid lunch plans** — multiple lunches delivered across **diffe
 orders (those use `geocode_address` — one trip, one delivery charge).
 - Input: `{ totalLunches: int, lunchesPerDay?: int (default 1), address: string }`
 - Delegates to `computePlanQuote()` in `src/tools/plan.js`.
+- Input also accepts optional `turno` (the chosen delivery slot).
 - Returns: `{ isPlan: true, days, perDayDelivery, foodTotal, shippingTotal, grandTotal, zone, breakdown, instruction }`
   or an error shape (`needsClarification` for non-uniform splits, `isZone4`, `BELOW_MIN_ORDER`).
-- The `instruction` tells Claude to present the breakdown and **HANDOFF in the same message** —
-  no `<ORDEN>`, no bank details, no "¿Confirmas tu pedido?". Plans are finalized by a human.
+- The `instruction` gives Claude a **ready-made `<ORDEN>` block** (with `orderType:"plan"`) to emit
+  verbatim, and tells it to present the breakdown ending in "¿Confirmas tu pedido?". From there the
+  plan follows the **same flow as a normal order**: confirm → bank details → comprobante. On payment
+  the snapshot's `orderType:"plan"` routes the Zoho write to a **Deal** (see `.claude/rules/zoho.md`).
 
 ## executeGeoTool(toolName, input, context)
 
@@ -88,11 +91,13 @@ source of truth for plan pricing:
 `almuerzoQty = totalLunches` to the API, which wrongly applied the multi-lunch *discount* to a plan
 where each lunch ships on a separate day.
 
-`formatPlanBreakdown(q)` renders the WhatsApp message. The returned object is also the future
-payload for the **Zoho Deals** module (NOT `Planificacion_de_Entregas`) — plans are Deals.
-For now the bot only quotes + hands off to a human; no Zoho write happens for plans yet.
+`formatPlanBreakdown(q)` renders the WhatsApp message. The `quote_plan` handler also builds the
+`<ORDEN>` block (`orderType:"plan"`, `cantidad`=totalLunches, `total`=grandTotal incl. shipping,
+`deliveryCost`=shippingTotal) so the snapshot carries everything the **Zoho Deal** needs. Plans flow
+through the normal confirm→pay path; on payment `createZohoDealRecord()` fires (NOT
+`createZohoDeliveryRecord`). See `.claude/rules/zoho.md`.
 
-Tested by `test-plan.js` (math vs live API) and `test-plan-convo.js` (full conversation).
+Tested by `test-plan.js` (math vs live API) and `test-plan-convo.js` (full flow → Deal).
 
 ## Low-Confidence Geocode Handling
 

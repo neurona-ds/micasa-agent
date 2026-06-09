@@ -31,10 +31,12 @@ Two different things that both involve "multiple almuerzos":
 | Tool | `geocode_address` | `quote_plan` |
 | Multi-lunch discount | Applies (N in one drop) | Applies only to each day's drop |
 | Delivery charged | Once | **Per delivery day** |
-| Flow ends in | Confirmation → payment | Breakdown → **HANDOFF** (human finalizes) |
-| Zoho | `Planificacion_de_Entregas` | **Deals** (future — not wired yet) |
+| Flow | Confirmation → bank → comprobante | Same: confirmation → bank → comprobante |
+| Zoho on payment | `Planificacion_de_Entregas` (`createZohoDeliveryRecord`) | **Deals** (`createZohoDealRecord`) |
 
-Plan math lives in `src/tools/plan.js` (`computePlanQuote`). See `.claude/rules/geocoding.md`.
+Both flows are identical to the customer; only the final Zoho write branches, keyed on
+`pending_order.orderType === 'plan'`. Plan math lives in `src/tools/plan.js` (`computePlanQuote`);
+the `quote_plan` handler builds the `<ORDEN>` block. See `.claude/rules/geocoding.md` and `zoho.md`.
 
 ## Order Flow Steps
 

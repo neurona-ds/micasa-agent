@@ -65,6 +65,10 @@ const GEOCODING_TOOLS = [
         address: {
           type: 'string',
           description: 'The delivery address or Google Maps URL provided by the customer.'
+        },
+        turno: {
+          type: 'string',
+          description: 'The delivery time slot the customer chose for the plan (e.g. "12:30", "1:30", "2:30"). Optional — pass it if the customer already gave it.'
         }
       },
       required: ['totalLunches', 'address']
@@ -285,10 +289,43 @@ async function executeGeoTool(toolName, input, context) {
       return { success: false, error: q.message || 'No se pudo cotizar el plan. Pide una dirección más específica o un pin de Maps.' }
     }
 
-    // Save the geocoded address/zone so the human asesor has it on handoff.
+    // Save the geocoded address/zone for the Zoho record / operator.
     saveDeliveryAddress(phone, address, q.zone, q.distanceKm).catch(() => {})
 
     const breakdown = formatPlanBreakdown(q)
+
+    // Map the chosen turno to an almuerzo slot (for the order block / Zoho Horario).
+    const turno = input.turno ? input.turno.toString().trim() : null
+    let horarioEntrega = null
+    if (turno) {
+      if (/12[:\s]?30/.test(turno))            horarioEntrega = '12:30 a 1:30'
+      else if (/1[:\s]?30|13[:\s]?30/.test(turno)) horarioEntrega = '1:30 a 2:30'
+      else if (/2[:\s]?30|14[:\s]?30/.test(turno)) horarioEntrega = '2:30 a 3:30'
+    }
+
+    const tipoLabel = q.totalLunches === 5 ? 'Semanal'
+                    : q.totalLunches === 20 ? 'Mensual' : 'Personalizado'
+    const diasLabel = q.days === 1 ? 'día' : 'días'
+    const itemsText = `Plan ${tipoLabel} — ${q.totalLunches} almuerzos (${q.lunchesPerDay}/día × ${q.days} ${diasLabel}) | `
+      + `Comida $${q.foodTotal.toFixed(2)} + Envío $${q.shippingTotal.toFixed(2)} `
+      + `($${q.perDayDelivery.toFixed(2)}/entrega × ${q.days})`
+
+    // Ready-made <ORDEN> block — Claude emits this VERBATIM so the existing snapshot /
+    // confirmation / payment machinery handles the plan exactly like a normal order.
+    // orderType:'plan' is what routes the final Zoho write to a Deal (not Planificacion).
+    const orden = {
+      total:          q.grandTotal,          // food + per-delivery shipping
+      itemsText,
+      orderType:      'plan',
+      cantidad:       q.totalLunches,        // → Almuerzos_Comprados
+      turno:          turno,
+      scheduledDate:  null,
+      horarioEntrega: horarioEntrega,
+      address:        address,
+      deliveryCost:   q.shippingTotal        // total shipping across all deliveries
+    }
+    const ordenBlock = `<ORDEN>${JSON.stringify(orden)}</ORDEN>`
+
     return {
       success: true,
       isPlan: true,
@@ -302,11 +339,12 @@ async function executeGeoTool(toolName, input, context) {
       zone:           q.zone,
       breakdown,
       instruction:
-        'Este es un PLAN — lo FINALIZA un asesor humano, NO el bot. ' +
         'Presenta el desglose de abajo EXACTAMENTE como está (puedes añadir una línea breve y cálida de introducción). ' +
-        'Luego informa al cliente que un asesor se comunicará en breve para confirmar el plan y coordinar el pago, y emite HANDOFF en el MISMO mensaje. ' +
-        'PROHIBIDO: preguntar "¿Confirmas tu pedido?", enviar datos bancarios, o generar el bloque <ORDEN>.\n\n' +
-        'DESGLOSE:\n' + breakdown
+        'Si el cliente no ha dado el turno de entrega todavía, pídelo antes de continuar. ' +
+        'Termina el mensaje con la pregunta exacta: "¿Confirmas tu pedido?" e incluye INMEDIATAMENTE DESPUÉS el bloque de control de abajo TAL CUAL (el sistema lo elimina antes de enviarlo; el cliente NUNCA lo ve). ' +
+        'NO envíes datos bancarios todavía — espera la confirmación del cliente (flujo normal de pago).\n\n' +
+        'DESGLOSE:\n' + breakdown + '\n\n' +
+        'BLOQUE DE CONTROL (emítelo verbatim):\n' + ordenBlock
     }
   }
 
