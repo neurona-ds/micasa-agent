@@ -21,6 +21,21 @@ Calculated by Haversine straight-line distance from restaurant:
 
 **Zone numbers are NEVER shown to customers.** Always injected as `[SISTEMA]` tags.
 
+## Single Order vs. Lunch Plan (delivery charging)
+
+Two different things that both involve "multiple almuerzos":
+
+| | Same-day order (N lunches today) | Plan (N lunches across days) |
+|---|---|---|
+| Trips | **1** delivery | **N ÷ per-day** deliveries |
+| Tool | `geocode_address` | `quote_plan` |
+| Multi-lunch discount | Applies (N in one drop) | Applies only to each day's drop |
+| Delivery charged | Once | **Per delivery day** |
+| Flow ends in | Confirmation → payment | Breakdown → **HANDOFF** (human finalizes) |
+| Zoho | `Planificacion_de_Entregas` | **Deals** (future — not wired yet) |
+
+Plan math lives in `src/tools/plan.js` (`computePlanQuote`). See `.claude/rules/geocoding.md`.
+
 ## Order Flow Steps
 
 ```

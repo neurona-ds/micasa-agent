@@ -43,6 +43,12 @@ Generates section with:
 - Whether restaurant is open/closed
 - Weekly schedule from `business_hours` table
 - Instructions for handling orders outside hours
+- **Lunch plan flow** (`PLANES DE ALMUERZO`): a plan = N lunches delivered across
+  different days. Tells Claude to capture `total + lunches-per-day + address`
+  conversationally, call the `quote_plan` tool (never compute the total by hand),
+  present the breakdown, then **HANDOFF in the same message** — no `<ORDEN>`,
+  no bank details, no "¿Confirmas tu pedido?". Plans are finalized by a human.
+  See `.claude/rules/geocoding.md` for the `quote_plan`/`computePlanQuote` mechanics.
 
 ## delivery.js — Delivery Zones/Pricing
 

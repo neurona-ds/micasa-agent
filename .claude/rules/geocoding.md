@@ -2,6 +2,7 @@
 paths:
   - "src/tools/geo.js"
   - "src/tools/micasaEnvios.js"
+  - "src/tools/plan.js"
 ---
 
 # Geocoding — src/tools/geo.js & micasaEnvios.js
@@ -22,7 +23,7 @@ Customer provides address
 
 ## GEOCODING_TOOLS Schema
 
-Two tools passed to every Claude API call:
+Three tools passed to every Claude API call:
 
 ### `geocode_address`
 Called when customer provides a text address.
@@ -33,6 +34,17 @@ Called when customer provides a text address.
 Called when customer sends a Google Maps link.
 - Input: `{ url: string }`
 - Returns: Same shape plus `locationUrl`
+
+### `quote_plan`
+Called for **prepaid lunch plans** — multiple lunches delivered across **different days**
+(plan semanal/mensual, "20 almuerzos 4 por día", etc.). NOT for same-day multi-lunch
+orders (those use `geocode_address` — one trip, one delivery charge).
+- Input: `{ totalLunches: int, lunchesPerDay?: int (default 1), address: string }`
+- Delegates to `computePlanQuote()` in `src/tools/plan.js`.
+- Returns: `{ isPlan: true, days, perDayDelivery, foodTotal, shippingTotal, grandTotal, zone, breakdown, instruction }`
+  or an error shape (`needsClarification` for non-uniform splits, `isZone4`, `BELOW_MIN_ORDER`).
+- The `instruction` tells Claude to present the breakdown and **HANDOFF in the same message** —
+  no `<ORDEN>`, no bank details, no "¿Confirmas tu pedido?". Plans are finalized by a human.
 
 ## executeGeoTool(toolName, input, context)
 
@@ -56,7 +68,31 @@ All geocoding, distance calculations, and pricing lookups are delegated to the e
 ### Files
 - `src/tools/micasaEnvios.js` — `getDeliveryQuote(params)` API client
 - `src/tools/geo.js` — Wraps tool calls to delegate to API
+- `src/tools/plan.js` — `computePlanQuote()` plan math (see below)
 - `test-micasa-envios.js` — Test script for API connectivity
+
+## Lunch Plans — src/tools/plan.js
+
+A **plan** is N lunches delivered uniformly across several **days** (not one same-day order).
+`computePlanQuote({ totalLunches, lunchesPerDay, address, unitPrice? })` is the deterministic
+source of truth for plan pricing:
+
+1. `days = totalLunches / lunchesPerDay` (must divide evenly → else `error: 'NON_UNIFORM'`).
+2. Quotes **one representative delivery day** at `almuerzoQty = lunchesPerDay` (uniform plan →
+   every day identical). This is where multi-lunch discounts legitimately apply — *per drop*.
+3. `shippingTotal = perDayDelivery × days` — shipping is charged **per delivery**, not once.
+4. `foodTotal = totalLunches × unitPrice`; `grandTotal = foodTotal + shippingTotal`.
+
+**Why this exists**: the old flow charged a plan's delivery a single time (Xime P. bug, 2026-06-08:
+5 lunches × 1/day quoted $2.25 shipping once → $29.75 instead of $2.25 × 5 = $38.75). It also passed
+`almuerzoQty = totalLunches` to the API, which wrongly applied the multi-lunch *discount* to a plan
+where each lunch ships on a separate day.
+
+`formatPlanBreakdown(q)` renders the WhatsApp message. The returned object is also the future
+payload for the **Zoho Deals** module (NOT `Planificacion_de_Entregas`) — plans are Deals.
+For now the bot only quotes + hands off to a human; no Zoho write happens for plans yet.
+
+Tested by `test-plan.js` (math vs live API) and `test-plan-convo.js` (full conversation).
 
 ## Low-Confidence Geocode Handling
 
@@ -112,3 +148,8 @@ When customer provides text address (Zone 2, $1.50) then sends GPS pin (Zone 3, 
 - `executeGeoTool` receives `currentMessage` parameter
 - Appends current message to history before estimation
 - Location pin webhook fetches session history for dynamic calculation
+
+### Geocoding Viewport Bounds Biasing (Duplicate Address Prevention)
+To prevent Google Maps from geocoding raw text addresses to incorrect far-away suburbs (such as duplicate street names in Pusuquí) when a closer local option exists:
+- Forward geocoding calls are biased using a 15 km viewport bounding box centered around the restaurant coordinates (`RESTAURANT_LAT`/`RESTAURANT_LNG`).
+- This bias is applied in the agent's backup geocoder (`getDeliveryZoneByAddress` in `src/memory.js`) and in the delivery app's geocoding utility (`maps.ts`).

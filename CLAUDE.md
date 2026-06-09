@@ -7,7 +7,8 @@ WhatsApp sales bot for Micasa Restaurante (Quito, Ecuador). Stack: Node.js (Comm
 - `src/orchestrator/coordinator.js` — Core message processing, prompt building, Claude calls, handoff logic
 - `src/memory.js` — All Supabase reads/writes
 - `src/zoho.js` — Zoho CRM OAuth + record creation
-- `src/tools/geo.js` — Geocoding tools (Claude tool calling)
+- `src/tools/geo.js` — Geocoding tools (Claude tool calling): `geocode_address`, `resolve_maps_url`, `quote_plan`
+- `src/tools/plan.js` — Lunch-plan pricing (`computePlanQuote`): delivery charged per delivery day
 - `src/tools/order.js` — Order type detection, quantity extraction
 - `src/prompts/` — System prompt: `core.md` + `schedule.js` + `delivery.js` + `orders.js`
 - `sql/` — Supabase migration scripts

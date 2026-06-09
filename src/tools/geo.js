@@ -13,6 +13,7 @@ const {
 } = require('../memory')
 const { detectOrderTypeFromHistory, detectAlmuerzoQty } = require('./order')
 const { getDeliveryQuote } = require('./micasaEnvios')
+const { computePlanQuote, formatPlanBreakdown } = require('./plan')
 
 /**
  * Tool schemas passed to every Claude API call.
@@ -45,6 +46,28 @@ const GEOCODING_TOOLS = [
         }
       },
       required: ['url']
+    }
+  },
+  {
+    name: 'quote_plan',
+    description: 'Calculate the price of a prepaid lunch PLAN — multiple lunches delivered across DIFFERENT days (not all on the same day). Call this ONLY for plans: "plan semanal", "plan mensual", "almuerzos para toda la semana", "20 almuerzos 4 por día", etc. Do NOT call this for a normal same-day order of several lunches (use geocode_address for those). Before calling you MUST know: (1) totalLunches — total lunches in the plan; (2) lunchesPerDay — how many are delivered each day (1 if one per day); (3) the delivery address. If any of these is unclear, ASK the customer first — never guess. The tool returns the exact price breakdown (food + per-delivery shipping) to present to the customer.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        totalLunches: {
+          type: 'integer',
+          description: 'Total number of lunches in the plan (e.g. 5 = plan semanal, 20 = plan mensual, or any number the customer asks for).'
+        },
+        lunchesPerDay: {
+          type: 'integer',
+          description: 'How many lunches are delivered per day. Default 1 (one lunch per day across several days). Use a higher number ONLY if the customer explicitly asks for several per day (e.g. "4 por día").'
+        },
+        address: {
+          type: 'string',
+          description: 'The delivery address or Google Maps URL provided by the customer.'
+        }
+      },
+      required: ['totalLunches', 'address']
     }
   }
 ]
@@ -229,6 +252,61 @@ async function executeGeoTool(toolName, input, context) {
       isZone4: false,
       locationUrl,
       instruction: `Use deliveryCost $${quote.delivery_gross != null ? quote.delivery_gross.toFixed(2) : '0.00'} exactly. In the order summary write the address as "📍 ${url}". Do NOT show zone number to customer.`
+    }
+  }
+
+  if (toolName === 'quote_plan') {
+    const totalLunches  = parseInt(input.totalLunches)
+    const lunchesPerDay = input.lunchesPerDay ? parseInt(input.lunchesPerDay) : 1
+    const address       = input.address
+    console.log(`[tool:quote_plan] total=${totalLunches} perDay=${lunchesPerDay} addr="${address}"`)
+
+    const q = await computePlanQuote({ totalLunches, lunchesPerDay, address })
+
+    if (!q.ok) {
+      if (q.isZone4) {
+        return {
+          success: true,
+          isZone4: true,
+          instruction: 'ZONA 4 — fuera del rango de entrega. Responde EXACTAMENTE: "¡Claro! Permíteme un momento, estamos verificando el costo de envío para tu sector 🔍 En breve un asesor te confirma los detalles." y luego emite HANDOFF.'
+        }
+      }
+      if (q.error === 'NON_UNIFORM' || q.error === 'PER_DAY_EXCEEDS_TOTAL' || q.error === 'INVALID_TOTAL') {
+        return {
+          success: false,
+          needsClarification: true,
+          error: q.message,
+          instruction: 'Pide al cliente que aclare el plan (cuántos almuerzos en total y cuántos por día). NO muestres ningún precio todavía.'
+        }
+      }
+      if (q.error === 'BELOW_MIN_ORDER') {
+        return { success: false, error: q.message }
+      }
+      return { success: false, error: q.message || 'No se pudo cotizar el plan. Pide una dirección más específica o un pin de Maps.' }
+    }
+
+    // Save the geocoded address/zone so the human asesor has it on handoff.
+    saveDeliveryAddress(phone, address, q.zone, q.distanceKm).catch(() => {})
+
+    const breakdown = formatPlanBreakdown(q)
+    return {
+      success: true,
+      isPlan: true,
+      totalLunches:   q.totalLunches,
+      lunchesPerDay:  q.lunchesPerDay,
+      days:           q.days,
+      perDayDelivery: q.perDayDelivery,
+      foodTotal:      q.foodTotal,
+      shippingTotal:  q.shippingTotal,
+      grandTotal:     q.grandTotal,
+      zone:           q.zone,
+      breakdown,
+      instruction:
+        'Este es un PLAN — lo FINALIZA un asesor humano, NO el bot. ' +
+        'Presenta el desglose de abajo EXACTAMENTE como está (puedes añadir una línea breve y cálida de introducción). ' +
+        'Luego informa al cliente que un asesor se comunicará en breve para confirmar el plan y coordinar el pago, y emite HANDOFF en el MISMO mensaje. ' +
+        'PROHIBIDO: preguntar "¿Confirmas tu pedido?", enviar datos bancarios, o generar el bloque <ORDEN>.\n\n' +
+        'DESGLOSE:\n' + breakdown
     }
   }
 

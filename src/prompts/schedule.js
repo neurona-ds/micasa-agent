@@ -80,18 +80,30 @@ Los almuerzos se sirven en 3 turnos (Lunes a Viernes):
 Para garantizar el delivery, se recomienda pedir antes de las 10:30.
 Cuando el cliente pida un almuerzo con delivery, infórmale: "Te recomendamos hacer tu pedido antes de las 10:30 para garantizar la entrega. ¿A qué turno lo prefieres? (12:30, 1:30 o 2:30)" y pide el turno antes de confirmar.
 
-PLANES SEMANALES Y MENSUALES DE ALMUERZO:
-Los clientes pueden prepagar planes de almuerzos por conveniencia:
-  • Plan Semanal: 5 almuerzos (Lun–Vie)
-  • Plan Mensual: 20 almuerzos (4 semanas)
-Precios — calcula multiplicando el precio unitario (son prepagos, NO descuentos):
-  • Plan Semanal Delivery:  5 × $${config.almuerzo_price_delivery} = $${(5 * parseFloat(config.almuerzo_price_delivery)).toFixed(2)}
-  • Plan Semanal En Local:  5 × $${config.almuerzo_price_instore} = $${(5 * parseFloat(config.almuerzo_price_instore)).toFixed(2)}
-  • Plan Mensual Delivery: 20 × $${config.almuerzo_price_delivery} = $${(20 * parseFloat(config.almuerzo_price_delivery)).toFixed(2)}
-  • Plan Mensual En Local: 20 × $${config.almuerzo_price_instore} = $${(20 * parseFloat(config.almuerzo_price_instore)).toFixed(2)}
-Cuando el cliente pregunta por planes o quiere almuerzos para toda la semana o el mes, preséntale estas opciones.
+PLANES DE ALMUERZO (PREPAGO, ENTREGA EN VARIOS DÍAS):
+Un "plan" es un pedido de varios almuerzos entregados en DÍAS DIFERENTES (no todos el mismo día).
+Ejemplos: "plan semanal", "plan mensual", "almuerzos para toda la semana", "20 almuerzos, 4 por día".
+  • Plan Semanal = 5 almuerzos (Lun–Vie), normalmente 1 por día.
+  • Plan Mensual = 20 almuerzos (4 semanas), normalmente 1 por día.
+  • El cliente puede pedir CUALQUIER cantidad y CUALQUIER distribución (ej: "10 almuerzos, 2 por día").
 IMPORTANTE: NUNCA menciones "descuento" ni "ahorro" — son simplemente pagos anticipados por conveniencia.
-Los planes se pagan por adelantado mediante transferencia bancaria (mismo flujo de pago).`
+
+⛔ CÓMO COTIZAR UN PLAN (OBLIGATORIO — usa la herramienta quote_plan, NUNCA calcules el total a mano):
+1. Antes de cotizar necesitas 3 datos: (a) total de almuerzos, (b) cuántos por día, (c) dirección de entrega.
+   - Si el cliente ya los dio en la conversación, NO los vuelvas a preguntar.
+   - "plan semanal" sin más detalle → asume 5 almuerzos, 1 por día.
+   - "plan mensual" sin más detalle → asume 20 almuerzos, 1 por día.
+   - Si el cliente dice una cantidad por día (ej: "4 por día"), úsala tal cual.
+   - Si falta cuántos por día y no se puede deducir → pregunta UNA sola vez: "¿Cuántos almuerzos por día deseas recibir?"
+   - Si falta la dirección → pídela (referencia + ubicación). NO captures datos de forma redundante.
+2. Cuando tengas los 3 datos, llama a la herramienta quote_plan con totalLunches, lunchesPerDay y address.
+3. La herramienta devuelve el desglose exacto (almuerzos + envío POR ENTREGA × número de entregas). Preséntalo TAL CUAL.
+   NUNCA inventes, redondees ni recalcules los montos: el envío de un plan se cobra por CADA entrega (cada día), no una sola vez.
+4. ⛔ LOS PLANES LOS FINALIZA UN ASESOR HUMANO (no el bot):
+   - Después de mostrar el desglose, informa que un asesor se comunicará en breve para confirmar el plan y coordinar el pago, y emite HANDOFF en el MISMO mensaje.
+   - PROHIBIDO preguntar "¿Confirmas tu pedido?" para un plan.
+   - PROHIBIDO enviar datos bancarios para un plan.
+   - PROHIBIDO generar el bloque <ORDEN> para un plan.`
 }
 
 module.exports = { buildScheduleBlock }
