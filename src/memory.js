@@ -4,9 +4,13 @@ const { createClient } = require('@supabase/supabase-js')
 const axios = require('axios')
 const { randomUUID } = require('crypto')
 
+// Use the SERVICE (secret) key so the bot bypasses Row Level Security. RLS is
+// enabled on all public tables to lock out the publishable/anon key (which is
+// public by design). Fall back to the publishable key only if the secret is
+// unset (e.g. local dev without the secret in .env).
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_KEY
+  process.env.SUPABASE_SECRET_KEY || process.env.SUPABASE_KEY
 )
 
 // Save a message to the conversation history.
