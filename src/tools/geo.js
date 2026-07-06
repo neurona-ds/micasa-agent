@@ -163,6 +163,17 @@ async function executeGeoTool(toolName, input, context) {
     console.log(`[tool:geocode_address] API result: ok=${quote.ok} zone=${quote.zone} dist=${quote.distance_km}km`)
 
     if (quote.ok === false) {
+      // System failure (bad/missing API key, service down) — do NOT ask the
+      // customer to re-send their address; that just loops. Hand off to a human.
+      if (quote.error === 'UNAUTHORIZED' || quote.error === 'SERVER_MISCONFIGURED') {
+        saveRawAddress(phone, address).catch(() => {})
+        return {
+          success: true,
+          systemHandoff: true,
+          instruction: 'El sistema de cálculo de envío no está disponible en este momento. Responde EXACTAMENTE: "¡Claro! Permíteme un momento, estamos verificando el costo de envío para tu sector 🔍 En breve un asesor te confirma los detalles." luego emite HANDOFF.'
+        }
+      }
+
       if (quote.error === 'ZONE_4_HANDOFF' || quote.zone === 4) {
         saveDeliveryAddress(phone, address, 4, quote.distance_km).catch(() => {})
         return {
@@ -223,6 +234,15 @@ async function executeGeoTool(toolName, input, context) {
     }
 
     if (quote.ok === false) {
+      // System failure — hand off to a human instead of asking for the address again.
+      if (quote.error === 'UNAUTHORIZED' || quote.error === 'SERVER_MISCONFIGURED') {
+        return {
+          success: true,
+          systemHandoff: true,
+          instruction: 'El sistema de cálculo de envío no está disponible en este momento. Responde EXACTAMENTE: "¡Claro! Permíteme un momento, estamos verificando el costo de envío para tu sector 🔍 En breve un asesor te confirma los detalles." luego emite HANDOFF.'
+        }
+      }
+
       if (quote.error === 'ZONE_4_HANDOFF' || quote.zone === 4) {
         saveDeliveryZoneOnly(phone, 4, quote.distance_km).catch(() => {})
         return {
