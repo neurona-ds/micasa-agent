@@ -559,7 +559,14 @@ async function lookupDeliveryCost(zone, orderType, total, cantidad) {
       if (tier.requires_approval) return null
       return parseFloat(tier.delivery_price)
     } else {
-      // carta: lookup by order total value
+      // carta: lookup by order total value.
+      // Zones 4+ (6+ km) are priced by the external delivery API (5-zone scheme),
+      // which is the source of truth — "trust the API fee". The bot-local
+      // delivery_tiers table only holds valid carta pricing for zones 1-3; its
+      // zone-4 row is a $0.00 handoff placeholder, NOT a real free delivery. Never
+      // manufacture a fallback cost here for those zones, or a customer/Zoho record
+      // could get $0 shipping instead of the API's real fee.
+      if (zone >= 4) return null
       const orderTotal = total || 0
       const { data, error } = await supabase
         .from('delivery_tiers')
