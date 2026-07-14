@@ -258,13 +258,23 @@ async function getDeliveryZoneByAddress(customerAddress) {
       return null
     }
 
+    // Bias results to a bounding box around the restaurant (approx. 15km radius)
+    // to resolve duplicates and prioritize close-by matches.
+    const latBias = 0.15
+    const lngBias = 0.15
+    const swLat = RESTAURANT_LAT - latBias
+    const swLng = RESTAURANT_LNG - lngBias
+    const neLat = RESTAURANT_LAT + latBias
+    const neLng = RESTAURANT_LNG + lngBias
+
     // Geocode the customer address, biased to Quito Ecuador
     const geocodeResponse = await axios.get('https://maps.googleapis.com/maps/api/geocode/json', {
       params: {
         address: `${customerAddress}, Quito, Ecuador`,
         key: apiKey,
         region: 'ec',
-        language: 'es'
+        language: 'es',
+        bounds: `${swLat},${swLng}|${neLat},${neLng}`
       },
       timeout: 5000
     })
@@ -585,15 +595,36 @@ async function savePendingOrder(phone, orderData) {
   if (error) console.error('Error saving pending_order:', error)
 }
 
-async function getPendingOrder(phone) {
+// Maximum age of a pending_order snapshot before it is considered abandoned.
+// Orders are normally paid within minutes; anything older is a stale summary from
+// a session the customer never completed. Without this, a months-old snapshot would
+// fire a Zoho record (with stale address/total) the moment the customer sends any
+// image — see the 47 abandoned rows found in the July 2026 reliability audit.
+const PENDING_ORDER_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
+
+async function getPendingOrder(phone, maxAgeMs = PENDING_ORDER_MAX_AGE_MS) {
   const { data, error } = await supabase
     .from('customers')
-    .select('pending_order')
+    .select('pending_order, session_last_activity_at')
     .eq('phone', phone)
     .single()
 
   if (error || !data) return null
-  return data.pending_order || null
+  const order = data.pending_order
+  if (!order) return null
+
+  // Age it by the snapshot's own saved_at (written since the July 2026 fix); fall back
+  // to the session's last-activity time for legacy snapshots that predate saved_at.
+  const stamp = order.saved_at || data.session_last_activity_at
+  if (stamp) {
+    const ageMs = Date.now() - new Date(stamp).getTime()
+    if (ageMs > maxAgeMs) {
+      console.warn(`[pending_order] Stale snapshot for ${phone} (age ${Math.round(ageMs / 86400000)}d) — clearing, not returning`)
+      clearPendingOrder(phone).catch(() => {})
+      return null
+    }
+  }
+  return order
 }
 
 async function clearPendingOrder(phone) {
@@ -719,17 +750,24 @@ async function getOrCreateSession(phone) {
       return data.current_session_id
     }
 
-    // No session or it expired — create a fresh one
+    // No session or it expired — create a fresh one. When a PREVIOUS session expired,
+    // also null any leftover pending_order in the same write: an order the customer
+    // never completed must not survive into the new session and fire a Zoho record on
+    // the next image. (A genuinely active order keeps its session alive above, so this
+    // only clears abandoned snapshots.)
     const newSessionId = randomUUID()
+    const sessionExpired = !!data.current_session_id
+    const update = {
+      current_session_id: newSessionId,
+      session_last_activity_at: new Date().toISOString()
+    }
+    if (sessionExpired) update.pending_order = null
     await supabase
       .from('customers')
-      .update({
-        current_session_id: newSessionId,
-        session_last_activity_at: new Date().toISOString()
-      })
+      .update(update)
       .eq('phone', phone)
 
-    console.log(`[session] New session for ${phone}: ${newSessionId}${data.current_session_id ? ' (previous expired)' : ''}`)
+    console.log(`[session] New session for ${phone}: ${newSessionId}${sessionExpired ? ' (previous expired — pending_order cleared)' : ''}`)
     return newSessionId
   } catch (e) {
     console.error('[session] getOrCreateSession error:', e.message)
