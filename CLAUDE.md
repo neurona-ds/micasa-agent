@@ -41,6 +41,7 @@ WATI POST /webhook → index.js (dedup, filter, route)
 - **Confirmation before payment**: Bank details must NEVER appear before "Confirmas tu pedido?" is answered
 - **Almuerzo cycle is read-only**: `getCurrentCycle()` never writes — pg_cron owns the weekly advance
 - **Two handoff tokens**: `HANDOFF` (general escalation) and `HANDOFF_PAYMENT` (payment confirmed)
+- **Geocoding bounds biasing**: Forward geocoding requests are biased to a 15 km bounding box around restaurant coordinates (`RESTAURANT_LAT`/`RESTAURANT_LNG`) to prevent duplicate street errors (like Pusuquí vs Rumipamba).
 
 ## Doc Ownership
 | When you change... | Read rule file... |

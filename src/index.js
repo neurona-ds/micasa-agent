@@ -197,9 +197,12 @@ app.post('/webhook', async (req, res) => {
             // Merge deliveryCost into existing pending_order (don't overwrite other fields)
             const existingOrder = await getPendingOrder(customerPhone).catch(() => null)
             if (existingOrder) {
-              await savePendingOrder(customerPhone, { ...existingOrder, deliveryCost: extractedCost })
+              // Tag the cost as operator-set so the coordinator's <ORDEN> merge treats it
+              // as authoritative (and does NOT let a later bot-generated cost override it,
+              // nor mistake a prior bot cost for an operator one).
+              await savePendingOrder(customerPhone, { ...existingOrder, deliveryCost: extractedCost, deliveryCostSource: 'operator' })
                 .catch(e => console.warn('[operator-assist] savePendingOrder failed:', e.message))
-              console.log(`[operator-assist] Updated pending_order.deliveryCost → $${extractedCost}`)
+              console.log(`[operator-assist] Updated pending_order.deliveryCost → $${extractedCost} (operator)`)
             }
             dataExtracted = true
           }
@@ -300,9 +303,18 @@ app.post('/webhook', async (req, res) => {
       }
     }
 
-    // Rate limit: if already processing a message for this phone, ignore
+    // Rate limit: if already processing a message for this phone, ignore.
+    // Save the incoming text to history first so a customer's rapid follow-up
+    // (very common on WhatsApp: greeting + order + address as separate sends) is
+    // NOT silently lost — the in-flight processMessage() picks it up from history.
     if (processingPhones.has(customerPhone)) {
-      console.log(`Already processing message for ${customerPhone} — ignoring`)
+      console.log(`Already processing message for ${customerPhone} — saving to history and ignoring`)
+      const rlText = typeof body.text === 'string' ? body.text : null
+      if (rlText && (body.type || 'text').toLowerCase() === 'text') {
+        const sid = await getOrCreateSession(customerPhone).catch(() => null)
+        await saveMessage(customerPhone, 'user', rlText, sid)
+          .catch(e => console.warn('[rate-limit] saveMessage failed:', e.message))
+      }
       return res.status(200).json({ status: 'rate_limited' })
     }
 
@@ -314,7 +326,13 @@ app.post('/webhook', async (req, res) => {
     const last = lastProcessed.get(customerPhone) || 0
     const elapsed = Date.now() - last
     if (elapsed < 500) {
-      console.log(`Too soon for ${customerPhone} (${elapsed}ms since last) — ignoring`)
+      console.log(`Too soon for ${customerPhone} (${elapsed}ms since last) — saving to history and ignoring`)
+      const rlText = typeof body.text === 'string' ? body.text : null
+      if (rlText && (body.type || 'text').toLowerCase() === 'text') {
+        const sid = await getOrCreateSession(customerPhone).catch(() => null)
+        await saveMessage(customerPhone, 'user', rlText, sid)
+          .catch(e => console.warn('[cooldown] saveMessage failed:', e.message))
+      }
       return res.status(200).json({ status: 'rate_limited' })
     }
 
@@ -332,26 +350,39 @@ app.post('/webhook', async (req, res) => {
         return res.status(200).json({ status: 'media_ignored' })
       }
 
-      const hasPending = await hasPendingOrder(customerPhone)
+      // Guard against WATI firing the same payment image twice (different waMsgId,
+      // arriving within ~1s). Without this, both handlers can pass the hasPendingOrder
+      // gate before clearPendingOrder() runs → two Zoho records for one payment.
+      if (processingPhones.has(customerPhone)) {
+        console.log(`Already processing for ${customerPhone} — skipping duplicate image`)
+        return res.status(200).json({ status: 'rate_limited' })
+      }
+      processingPhones.add(customerPhone)
+      try {
+        const hasPending = await hasPendingOrder(customerPhone)
 
-      if (hasPending) {
-        // First payment image — active order in progress
-        const ackMessage =
-          '¡Gracias! 📲 Recibimos tu comprobante de pago. Estamos verificando tu transferencia y en breve procesamos tu pedido. ¡Que disfrutes tu comida! 💛'
-        await sendWatiMessage(customerPhone, ackMessage)
-        // Save image event to conversation history so Claude knows the comprobante was received
-        // and does not ask for it again if the customer sends a follow-up text message.
-        const mediaSid = await getOrCreateSession(customerPhone).catch(() => null)
-        await saveMessage(customerPhone, 'user', '[Cliente envió comprobante de pago — imagen recibida]', mediaSid)
-          .catch(e => console.warn('[media] saveMessage (user comprobante) failed:', e.message))
-        await saveMessage(customerPhone, 'assistant', ackMessage, mediaSid)
-          .catch(e => console.warn('[media] saveMessage (ack) failed:', e.message))
-        await notifyHandoff(customerPhone, customerName, 'PAYMENT', 'Cliente envió comprobante de pago')
-        await pauseBot(customerPhone)
-        triggerZohoOnPayment(customerPhone, customerName)
-      } else {
-        // Follow-up image — order already processed, ignore silently
-        console.log(`Image follow-up (no pending order) from ${customerPhone} — ignored`)
+        if (hasPending) {
+          // First payment image — active order in progress
+          const ackMessage =
+            '¡Gracias! 📲 Recibimos tu comprobante de pago. Estamos verificando tu transferencia y en breve procesamos tu pedido. ¡Que disfrutes tu comida! 💛'
+          await sendWatiMessage(customerPhone, ackMessage)
+          // Save image event to conversation history so Claude knows the comprobante was received
+          // and does not ask for it again if the customer sends a follow-up text message.
+          const mediaSid = await getOrCreateSession(customerPhone).catch(() => null)
+          await saveMessage(customerPhone, 'user', '[Cliente envió comprobante de pago — imagen recibida]', mediaSid)
+            .catch(e => console.warn('[media] saveMessage (user comprobante) failed:', e.message))
+          await saveMessage(customerPhone, 'assistant', ackMessage, mediaSid)
+            .catch(e => console.warn('[media] saveMessage (ack) failed:', e.message))
+          await notifyHandoff(customerPhone, customerName, 'PAYMENT', 'Cliente envió comprobante de pago')
+          await pauseBot(customerPhone)
+          await triggerZohoOnPayment(customerPhone, customerName)
+        } else {
+          // Follow-up image — order already processed, ignore silently
+          console.log(`Image follow-up (no pending order) from ${customerPhone} — ignored`)
+        }
+      } finally {
+        lastProcessed.set(customerPhone, Date.now())
+        processingPhones.delete(customerPhone)
       }
 
       return res.status(200).json({ status: 'media_handoff' })
@@ -429,7 +460,11 @@ app.post('/webhook', async (req, res) => {
         // differs from what they recognise (e.g. "El Bosque, Quito 170132" vs
         // what they call their neighbourhood). Zone is still injected for pricing.
         let locationMessage = '📍 Ubicación compartida vía WhatsApp'
-        if (quote) {
+        // getDeliveryQuote returns the API error body ({ ok:false, error, ... }) on
+        // HTTP 4xx — a truthy object. Only treat it as a real quote when ok !== false;
+        // otherwise the error object would inject "Zona undefined" and (for Zone 4)
+        // silently skip the mandatory HANDOFF.
+        if (quote && quote.ok !== false) {
           const { zone, distance_km: distanceKm } = quote
 
           // Save zone + distance only — the customer's typed text address is the
@@ -454,6 +489,22 @@ app.post('/webhook', async (req, res) => {
           // omitted from what Claude sees (stored internally for Zoho only via log).
           locationMessage += `\n\n[SISTEMA: Pin de ubicación recibido | Distancia: ${distanceKm}km → Zona ${zone}. NO mencionar zona al cliente. NO mostrar dirección geocodificada al cliente.${costChangeWarning}]`
           console.log(`[location handler] Zone ${zone} (${distanceKm}km) | (NOT sent to Claude)`)
+        } else if (quote && quote.ok === false) {
+          // API returned a business/error code. Mirror the geo.js tool-path handling
+          // so a native location pin gets the same deterministic treatment as a typed
+          // address — critical for Zone 4, which MUST hand off (sacred rule).
+          const errCode = quote.error
+          if (errCode === 'ZONE_4_HANDOFF' || quote.zone === 4) {
+            saveDeliveryZoneOnly(customerPhone, 4, quote.distance_km ?? null).catch(() => {})
+            locationMessage += '\n\n[SISTEMA: La ubicación está en ZONA 4 (fuera del rango de entrega estándar). Responde EXACTAMENTE: "¡Claro! Permíteme un momento, estamos verificando el costo de envío para tu sector 🔍 En breve un asesor te confirma los detalles." y luego emite HANDOFF. NO menciones la zona al cliente.]'
+            console.log('[location handler] Zone 4 pin — injecting deterministic HANDOFF instruction')
+          } else if (errCode === 'BELOW_MIN_ORDER') {
+            locationMessage += `\n\n[SISTEMA: El pedido mínimo para este sector es de $${quote.min_order}. Informa amablemente al cliente que debe agregar más productos para alcanzar el mínimo. NO menciones la zona.]`
+            console.log('[location handler] Pin below min order — injecting instruction')
+          } else {
+            // OUT_OF_RANGE / GEOCODE_FAILED / other — treat like a failed geocode.
+            console.warn(`[location handler] API error (${errCode}) — passing pin to Claude without zone`)
+          }
         } else {
           console.warn('[location handler] Reverse-geocoding failed — passing pin to Claude without zone')
         }
@@ -503,62 +554,76 @@ app.post('/webhook', async (req, res) => {
     }
     // ─────────────────────────────────────────────────────────────────────────
 
-    // Wait 3 seconds before processing — gives the customer time to finish
-    // sending split messages and makes the reply feel less robotic.
-    await new Promise(r => setTimeout(r, 3000))
-
-    // Mark as processing — block any concurrent webhook for this phone.
-    // lastProcessed is stamped AFTER the reply is sent (see below) so the
-    // 3-second cooldown starts when the customer can actually see the response.
+    // Mark as processing BEFORE the debounce sleep. Previously this was added AFTER
+    // the 3s sleep, leaving a window where a concurrent webhook for the same phone
+    // passed the processingPhones guard and spawned a second processMessage() call
+    // (double Claude call, double pending_order write, double reply). Released in the
+    // finally below.
     processingPhones.add(customerPhone)
 
-    let reply, needsHandoff, needsPaymentHandoff
+    // Acknowledge the webhook immediately, then process asynchronously. WATI's HTTP
+    // client times out at ~5s; the 3s debounce + Claude + geocoding routinely exceeds
+    // that, producing 499s. The customer reply is delivered independently via the WATI
+    // API (sendWatiMessage), so the HTTP response and the reply are fully decoupled.
+    // WATI redeliveries remain blocked by processedMsgIds (populated above).
+    res.status(200).json({ status: 'accepted' })
+
     try {
-      ;({ reply, needsHandoff, needsPaymentHandoff } = await processMessage(
+      // Wait 3 seconds before processing — gives the customer time to finish
+      // sending split messages and makes the reply feel less robotic. Any follow-up
+      // message that arrives during this window is saved to history by the
+      // rate-limit guard above, so processMessage() picks it up.
+      await new Promise(r => setTimeout(r, 3000))
+
+      const { reply, needsHandoff, needsPaymentHandoff } = await processMessage(
         customerPhone,
         customerMessage,
         customerName
-      ))
+      )
+
+      // Send reply to customer
+      // Payment messages are split into two: bank accounts + follow-up instructions
+      const PAYMENT_SPLIT_MARKERS = ['Una vez realices la transferencia', 'Una vez hecho el pago', 'Una vez realizada la transferencia']
+      const splitMarker = PAYMENT_SPLIT_MARKERS.find(m => reply.includes(m))
+      if (splitMarker) {
+        const splitIdx = reply.indexOf(splitMarker)
+        const msg1 = reply.substring(0, splitIdx).trim()
+        const msg2 = reply.substring(splitIdx).trim()
+        await sendWatiMessage(customerPhone, msg1)
+        await new Promise(r => setTimeout(r, 1000)) // 1s pause between messages
+        await sendWatiMessage(customerPhone, msg2)
+      } else {
+        await sendWatiMessage(customerPhone, reply)
+      }
+
+      // Handle handoff notifications
+      if (needsPaymentHandoff) {
+        await notifyHandoff(customerPhone, customerName, 'PAYMENT', customerMessage)
+        await pauseBot(customerPhone) // wait for human to verify payment
+      } else if (needsHandoff) {
+        await notifyHandoff(customerPhone, customerName, 'GENERAL', customerMessage)
+        await pauseBot(customerPhone) // wait for human to provide delivery info — bot auto-resumes when operator sends price
+      }
+    } catch (err) {
+      // Response already sent — just log. processMessage has its own internal
+      // try/catch and returns a fallback reply, so this mainly catches send errors.
+      console.error('[text-async] Error after ack (response already sent):', err)
     } finally {
+      // Stamp lastProcessed AFTER the reply is sent so the 500ms cooldown counts
+      // from when the customer can see the response; release the processing lock.
+      lastProcessed.set(customerPhone, Date.now())
       processingPhones.delete(customerPhone)
     }
-
-    // Send reply to customer
-    // Payment messages are split into two: bank accounts + follow-up instructions
-    const PAYMENT_SPLIT_MARKERS = ['Una vez realices la transferencia', 'Una vez hecho el pago', 'Una vez realizada la transferencia']
-    const splitMarker = PAYMENT_SPLIT_MARKERS.find(m => reply.includes(m))
-    if (splitMarker) {
-      const splitIdx = reply.indexOf(splitMarker)
-      const msg1 = reply.substring(0, splitIdx).trim()
-      const msg2 = reply.substring(splitIdx).trim()
-      await sendWatiMessage(customerPhone, msg1)
-      await new Promise(r => setTimeout(r, 1000)) // 1s pause between messages
-      await sendWatiMessage(customerPhone, msg2)
-    } else {
-      await sendWatiMessage(customerPhone, reply)
-    }
-
-    // Handle handoff notifications
-    if (needsPaymentHandoff) {
-      await notifyHandoff(customerPhone, customerName, 'PAYMENT', customerMessage)
-      await pauseBot(customerPhone) // wait for human to verify payment
-    } else if (needsHandoff) {
-      await notifyHandoff(customerPhone, customerName, 'GENERAL', customerMessage)
-      await pauseBot(customerPhone) // wait for human to provide delivery info — bot auto-resumes when operator sends price
-    }
-
-    // Stamp lastProcessed NOW — after the reply has been sent — so the 3-second
-    // cooldown counts from when the customer can see the bot's response, not from
-    // when the incoming webhook first arrived.
-    lastProcessed.set(customerPhone, Date.now())
-
-    res.status(200).json({ status: 'ok' })
+    return
 
   } catch (error) {
     console.error('Webhook error:', error)
     // Always return 200 — a 5xx response causes WATI to retry the webhook,
     // which would make the bot send duplicate/unsolicited messages.
-    res.status(200).json({ status: 'error', message: error.message })
+    // Guard against a double-send: the text path acks early (res already sent).
+    if (!res.headersSent) {
+      res.status(200).json({ status: 'error', message: error.message })
+    }
   }
 })
 
@@ -574,7 +639,10 @@ async function sendWatiMessage(phone, message) {
         headers: {
           Authorization: process.env.WATI_API_KEY,
           'Content-Type': 'application/json'
-        }
+        },
+        // Without a timeout, a slow/hung WATI API blocks the caller indefinitely.
+        // 10s is generous for a single session-message POST.
+        timeout: 10000
       }
     )
 
@@ -596,8 +664,13 @@ async function sendWatiMessage(phone, message) {
     } else {
       console.log(`Message sent to ${phone}:`, response.data?.result || 'ok', '(no msgId in response)')
     }
+    return true
   } catch (error) {
-    console.error('Error sending WATI message:', error.response?.data || error.message)
+    // Surface delivery failures loudly — the customer received NOTHING even though
+    // history/Zoho may have been written as if the reply was delivered. Returning
+    // false lets callers on critical paths react instead of assuming success.
+    console.error(`[WATI] FAILED to send message to ${phone}:`, error.response?.data || error.message)
+    return false
   }
 }
 

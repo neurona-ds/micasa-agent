@@ -56,13 +56,13 @@ Intercepts Fanesca-related messages from Meta Ads (Semana Santa 2026). Bypasses 
 
 **Behavior**: `pending_order` is null, confirmation bypass detects null, falls through to Claude with explicit retry instruction, forces regeneration with `<ORDEN>`.
 
-## Weekend Almuerzo — Deterministic HANDOFF
+## Weekend Almuerzo — Now Prompt-Driven (was Deterministic HANDOFF)
 
-Before any Claude call:
-- Saturday/Sunday + message mentions "almuerzo"
-- → Hardcoded HANDOFF fired
-- Claude never called
-- Weekend menu not programmed — human confirms availability
+The old hardcoded `isAlmuerzoOrderOnWeekend` HANDOFF gate in `src/index.js` was removed
+(commit ca32294). Weekends no longer intercept before Claude. Instead the prompt
+(`orders.js` REGLA MENÚ ALMUERZOS step 3 + `schedule.js`) tells Claude to offer next-week
+pre-booking and run the normal order flow; it emits `HANDOFF` only if the customer insists
+on same-day weekend delivery. See `.claude/rules/business-logic.md` for the current flow.
 
 ## Timezone Offset Bug
 

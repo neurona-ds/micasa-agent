@@ -21,7 +21,7 @@ function buildScheduleBlock(businessHours, config, now, BH_DAYS_ES, MON_FIRST,
   const todayHoursStr = `${openT} a ${closeT}`
 
   return `FECHA Y HORA ACTUAL:
-Hoy es ${todayStr}. Hora actual en Ecuador: ${currentTimeStr}.${isWeekend ? ' Es fin de semana — cualquier consulta sobre almuerzos debe ser atendida por un agente humano (HANDOFF).' : ''}
+Hoy es ${todayStr}. Hora actual en Ecuador: ${currentTimeStr}.${isWeekend ? ' Es fin de semana (el restaurante está cerrado).' : ''}
 ${!isRestaurantOpen ? `⚠️ FUERA DE HORARIO: Son las ${currentTimeStr} — el restaurante está cerrado (opera ${openLabel}).` : ''}
 NUNCA menciones una fecha diferente a esta. NUNCA inventes ni supongas la fecha.
 

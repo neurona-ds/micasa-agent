@@ -1,6 +1,59 @@
 const Anthropic = require('@anthropic-ai/sdk')
+const axios = require('axios')
 const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getAlmuerzoDeliveryTiers, getDeliveryZoneByAddress, getCurrentCycle, getWeekAlmuerzos, getPaymentMethods, saveDeliveryAddress, saveRawAddress, getCustomerAddress, getBusinessHours, lookupDeliveryCost, savePendingOrder, getPendingOrder, clearPendingOrder, getOrCreateSession, endSession } = require('../memory')
 const { createZohoDeliveryRecord, createZohoDealRecord } = require('../zoho')
+
+// Page the admin via WhatsApp when a critical post-payment step fails (Zoho record
+// not created, order snapshot not saved). Best-effort and self-contained so the
+// coordinator doesn't need to import index.js (which would be circular).
+async function alertAdmin(text) {
+  const adminPhone = process.env.ADMIN_PHONE
+  const watiKey = process.env.WATI_API_KEY
+  if (!adminPhone || !watiKey) {
+    console.warn('[alertAdmin] ADMIN_PHONE/WATI_API_KEY not set — alert skipped:', text)
+    return
+  }
+  try {
+    await axios.post(
+      `https://live-mt-server.wati.io/470858/api/v1/sendSessionMessage/${adminPhone}`,
+      null,
+      { params: { messageText: text }, headers: { Authorization: watiKey, 'Content-Type': 'application/json' }, timeout: 10000 }
+    )
+    console.error('[alertAdmin] sent:', text)
+  } catch (e) {
+    console.error('[alertAdmin] failed to send:', e.response?.data || e.message)
+  }
+}
+
+// Create the Zoho record for an order and, only on success, clear the pending_order
+// snapshot (preserving the invariant "clearPendingOrder runs immediately after Zoho
+// fires"). On failure: page the admin and KEEP the snapshot so the payment is not
+// silently lost from the CRM and a human can recover it.
+async function fireZohoAndClear(orderData, phone, customerName) {
+  try {
+    if (orderData.orderType === 'plan') {
+      console.log('Zoho: firing DEAL creation for', phone)
+      await createZohoDealRecord(orderData)
+    } else {
+      console.log('Zoho: firing delivery record creation for', phone)
+      await createZohoDeliveryRecord(orderData)
+    }
+    // Success — clear the snapshot so follow-up images don't re-trigger Zoho.
+    clearPendingOrder(phone).catch(() => {})
+  } catch (err) {
+    // Do NOT clear the snapshot — keep it so the order can be recovered/retried.
+    console.error('Zoho record creation FAILED — snapshot preserved:', err.message)
+    await alertAdmin(
+      `⚠️ *FALLA ZOHO — PAGO RECIBIDO SIN REGISTRO*\n` +
+      `Cliente: ${customerName || orderData.customerName || phone}\n` +
+      `Teléfono: ${phone}\n` +
+      `Total: $${orderData.total} | Envío: $${orderData.deliveryCost}\n` +
+      `Dirección: ${orderData.address || '(sin dirección)'}\n` +
+      `Error: ${err.message}\n` +
+      `ACCIÓN MANUAL REQUERIDA: crear el registro en Zoho.`
+    ).catch(() => {})
+  }
+}
 const { detectOrderTypeFromHistory, detectAlmuerzoQty, extractOrderDataForZoho, parseScheduledDate } = require('../tools/order')
 const { GEOCODING_TOOLS, executeGeoTool } = require('../tools/geo')
 const fs   = require('fs')
@@ -706,15 +759,33 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
           // If the customer changed address (text), the stored pin belongs to the old address.
           locationPin:   (freshGeo?.locationPin && (!claudeSnap.address || claudeSnap.address === freshGeo?.address)) ? freshGeo.locationPin : null,
           locationUrl:   (freshGeo?.locationUrl && (!claudeSnap.address || claudeSnap.address === freshGeo?.address)) ? freshGeo.locationUrl : null,
-          deliveryCost:  null  // filled below
+          deliveryCost:  null,  // filled below
+          // Timestamp used to expire stale snapshots (see getPendingOrder in memory.js).
+          saved_at:      new Date().toISOString()
         }
-        // Priority: operator-provided cost > Claude's cost from summary > DB zone lookup.
-        // Claude's cost is authoritative for the address the customer confirmed — the DB zone
-        // may still point to a previous address if the customer changed delivery location.
+
+        // Safety net: a plan that Claude computed WITHOUT calling quote_plan carries
+        // orderType:'almuerzo' (the <ORDEN> schema historically listed only almuerzo/carta),
+        // which misroutes the Zoho write to Planificacion_de_Entregas instead of a Deal.
+        // Detect plan-shaped item text and correct the type. (cantidad alone is NOT used —
+        // a same-day order of several almuerzos is a legitimate 'almuerzo', one delivery.)
+        if (snap.orderType === 'almuerzo' &&
+            /\bplan\b|\d+\s*por\s*d[ií]a|[x×]\s*\d+\s*d[ií]as/i.test(snap.itemsText || '')) {
+          console.log(`[orderType] Correcting almuerzo→plan for plan-shaped order: "${snap.itemsText}"`)
+          snap.orderType = 'plan'
+        }
+
+        // Priority: operator-set cost > Claude's cost from summary > DB zone lookup.
+        // IMPORTANT: only a cost explicitly set by an operator ([OPERADOR] message, flagged
+        // deliveryCostSource:'operator') outranks Claude's fresh summary cost. Previously ANY
+        // non-null prior cost was treated as "operator-provided", so a bot-generated cost from
+        // an earlier summary froze and overrode a corrected re-summary — producing an
+        // internally inconsistent snapshot (e.g. total says $60 but deliveryCost stuck at $10).
         const priorSnap = await getPendingOrder(customerPhone).catch(() => null)
-        if (priorSnap?.deliveryCost != null) {
+        if (priorSnap?.deliveryCostSource === 'operator' && priorSnap?.deliveryCost != null) {
           snap.deliveryCost = priorSnap.deliveryCost
-          console.log(`lookupDeliveryCost: using operator-provided cost $${snap.deliveryCost} (skipping DB lookup)`)
+          snap.deliveryCostSource = 'operator'  // preserve the flag across re-summaries
+          console.log(`lookupDeliveryCost: using operator-set cost $${snap.deliveryCost} (skipping DB lookup)`)
         } else if (claudeSnap.deliveryCost != null) {
           snap.deliveryCost = claudeSnap.deliveryCost
           console.log(`lookupDeliveryCost: using Claude summary cost $${snap.deliveryCost}`)
@@ -726,9 +797,20 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
           }
         }
         console.log('Saving pending_order from <ORDEN> JSON:', snap)
-        savePendingOrder(customerPhone, snap).catch(err =>
-          console.error('savePendingOrder error (non-blocking):', err.message)
-        )
+        try {
+          await savePendingOrder(customerPhone, snap)
+        } catch (err) {
+          // The summary was shown to the customer but the snapshot did not persist.
+          // Without pending_order, a later payment image creates NO Zoho record and no
+          // alert fires (single-source-of-truth, no history fallback). Page the admin.
+          console.error('CRITICAL: savePendingOrder failed — order snapshot NOT saved:', err.message)
+          await alertAdmin(
+            `⚠️ *FALLA AL GUARDAR PEDIDO*\n` +
+            `Cliente: ${snap.customerName || customerPhone}\nTeléfono: ${customerPhone}\n` +
+            `Total: $${snap.total} | Envío: $${snap.deliveryCost}\n` +
+            `El resumen se mostró pero NO se guardó. Si el cliente paga, revisar manualmente.`
+          ).catch(() => {})
+        }
       } catch (e) {
         console.error('Failed to parse <ORDEN> JSON — snapshot not saved:', e.message, ordenMatch[1])
       }
@@ -784,22 +866,11 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       // ─────────────────────────────────────────────────────────────────────────
 
       if (orderData) {
-        // Route: plans → Zoho Deal; everything else → Planificacion_de_Entregas.
-        if (orderData.orderType === 'plan') {
-          console.log('Zoho: firing DEAL creation (plan) for', customerPhone, orderData)
-          createZohoDealRecord(orderData).catch(err =>
-            console.error('Zoho deal creation failed (non-blocking):', err.message)
-          )
-        } else {
-          console.log('Zoho: firing delivery record creation for', customerPhone, orderData)
-          createZohoDeliveryRecord(orderData).catch(err =>
-            console.error('Zoho delivery record failed (non-blocking):', err.message)
-          )
-        }
-        // Clear the order snapshot so follow-up images don't re-trigger Zoho.
-        // Session stays open — it will be closed by closeOrderSession() when the
-        // operator sends "📦 Orden Confirmada" to the customer.
-        clearPendingOrder(customerPhone).catch(() => {})
+        // Route (plan → Deal, else → Planificacion), create the record, and clear the
+        // snapshot ONLY on success. On failure the admin is paged and the snapshot is
+        // preserved so the paid order is never silently lost from the CRM.
+        // Session stays open — closed by closeOrderSession() on "📦 Orden Confirmada".
+        await fireZohoAndClear(orderData, customerPhone, customerName)
       } else {
         console.warn('Zoho: HANDOFF_PAYMENT detected but no order data found — skipping')
       }
@@ -877,21 +948,10 @@ async function triggerZohoOnPayment(customerPhone, customerName) {
       }
     }
 
-    if (orderData.orderType === 'plan') {
-      console.log('Zoho: firing DEAL creation (payment image received, plan) for', customerPhone, orderData)
-      createZohoDealRecord(orderData).catch(err =>
-        console.error('Zoho deal creation failed (non-blocking):', err.message)
-      )
-    } else {
-      console.log('Zoho: firing delivery record (payment image received) for', customerPhone, orderData)
-      createZohoDeliveryRecord(orderData).catch(err =>
-        console.error('Zoho delivery record failed (non-blocking):', err.message)
-      )
-    }
-    // Clear the order snapshot so follow-up images don't re-trigger Zoho.
-    // Session stays open — it will be closed by closeOrderSession() when the
-    // operator sends "📦 Orden Confirmada" to the customer.
-    clearPendingOrder(customerPhone).catch(() => {})
+    // Create the record and clear the snapshot only on success; on failure page the
+    // admin and preserve the snapshot (see fireZohoAndClear). Session stays open —
+    // closed by closeOrderSession() when the operator sends "📦 Orden Confirmada".
+    await fireZohoAndClear(orderData, customerPhone, customerName)
   } catch (err) {
     console.error('Zoho triggerZohoOnPayment error (non-blocking):', err.message)
   }

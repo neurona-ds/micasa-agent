@@ -184,8 +184,17 @@ async function createZohoDeliveryRecord(orderData) {
   // ── Step 2: build the record using verified field API names ───────────────
   // Primary source: pre-computed fields frozen in pending_order at order summary time.
   // Fallbacks: compute on the fly for legacy orders that predate these fields.
-  // Ecuador timezone fallback (en-CA = YYYY-MM-DD) for same-day immediate orders.
-  const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Guayaquil' })
+  // Get Ecuador local date (UTC-5) timezone-independently
+  const utcMs = Date.now();
+  const ecuadorOffsetMs = -5 * 60 * 60 * 1000;
+  const ecuadorTimeMs = utcMs + ecuadorOffsetMs;
+  const tempDate = new Date(ecuadorTimeMs);
+  const localOffsetMs = tempDate.getTimezoneOffset() * 60 * 1000;
+  const nowEc = new Date(ecuadorTimeMs + localOffsetMs);
+  const yyyy = nowEc.getFullYear();
+  const mm = String(nowEc.getMonth() + 1).padStart(2, '0');
+  const dd = String(nowEc.getDate()).padStart(2, '0');
+  const today = `${yyyy}-${mm}-${dd}`;
 
   // fechaEnvio is frozen in pending_order at order time → correct even if payment
   // arrives after midnight. Fall back to scheduledDate → today for older orders.

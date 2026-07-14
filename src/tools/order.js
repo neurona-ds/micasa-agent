@@ -35,12 +35,18 @@ function detectOrderTypeFromHistory(history) {
 }
 
 // Try to extract the number of almuerzos from conversation history
+const WORD_NUMS_ES = { dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10 }
 function detectAlmuerzoQty(history) {
   let qty = 1 // default: assume 1 if not explicitly mentioned
   const recentUserMsgs = history.filter(h => h.role === 'user').slice(-10)
   for (const msg of recentUserMsgs) {
     const match = msg.message.match(/(\d+)\s*almuerzo/i)
     if (match) qty = Math.max(qty, parseInt(match[1]))
+    // Also handle Spanish word numerals ("dos almuerzos") — otherwise qty stays 1 and
+    // estimateSubtotal underestimates the order, causing a false BELOW_MIN_ORDER in
+    // zones 1–2 on the first geocode. ("un"/"una"/"uno" correctly map to the default 1.)
+    const wordMatch = msg.message.match(/\b(dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez)\s+almuerzos?/i)
+    if (wordMatch) qty = Math.max(qty, WORD_NUMS_ES[wordMatch[1].toLowerCase()])
   }
   // Also check bot order summaries (e.g. "2 × Almuerzo del día")
   const recentBotMsgs = history.filter(h => h.role === 'assistant').slice(-6)
@@ -67,7 +73,14 @@ function parseScheduledDate(dateStr) {
     jul:7, ago:8, sep:9, oct:10, nov:11, dic:12
   }
 
-  const nowEc    = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Guayaquil' }))
+  // Get Ecuador local date (UTC-5) timezone-independently
+  const utcMs = Date.now();
+  const ecuadorOffsetMs = -5 * 60 * 60 * 1000;
+  const ecuadorTimeMs = utcMs + ecuadorOffsetMs;
+  const tempDate = new Date(ecuadorTimeMs);
+  const localOffsetMs = tempDate.getTimezoneOffset() * 60 * 1000;
+  const nowEc = new Date(ecuadorTimeMs + localOffsetMs);
+  
   const nowYear  = nowEc.getFullYear()
   const nowMonth = nowEc.getMonth() + 1
 
@@ -276,11 +289,19 @@ function extractOrderDataForZoho(summaryMsg, history, phone, name, storedAddress
     horarioEntrega = turno || 'Inmediato'
   }
 
-  // Fecha_de_Envio: freeze delivery date NOW (Ecuador timezone) so zoho.js
-  // gets the correct date even if payment arrives after midnight.
-  // Future-scheduled orders use scheduledDate; same-day orders use today.
-  const fechaEnvio = scheduledDate
-    || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Guayaquil' })
+  // Get Ecuador local date (UTC-5) timezone-independently
+  const utcMs = Date.now();
+  const ecuadorOffsetMs = -5 * 60 * 60 * 1000;
+  const ecuadorTimeMs = utcMs + ecuadorOffsetMs;
+  const tempDate = new Date(ecuadorTimeMs);
+  const localOffsetMs = tempDate.getTimezoneOffset() * 60 * 1000;
+  const nowEc = new Date(ecuadorTimeMs + localOffsetMs);
+  const yyyy = nowEc.getFullYear();
+  const mm = String(nowEc.getMonth() + 1).padStart(2, '0');
+  const dd = String(nowEc.getDate()).padStart(2, '0');
+  const today = `${yyyy}-${mm}-${dd}`;
+
+  const fechaEnvio = scheduledDate || today
   // ────────────────────────────────────────────────────────────────────────────
 
   return {

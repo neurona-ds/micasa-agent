@@ -100,14 +100,23 @@ Claude emits these tokens in reply text. Coordinator strips them before sending 
 
 Zone 4 triggers HANDOFF immediately when address is identified — no order summary shown.
 
-## Weekend Almuerzo — Deterministic HANDOFF
+## Weekend Almuerzo — Next-Week Pre-Booking (prompt-driven)
 
-Before any Claude call:
-- If current day is Saturday or Sunday
-- AND message mentions "almuerzo"
-- → Hardcoded HANDOFF is fired
-- Claude is never called
-- Weekend menu is not programmed — human must confirm availability
+There is **no code-level weekend interception** — Claude is always called on weekends.
+Behavior is driven entirely by the prompt (`src/prompts/orders.js` REGLA MENÚ ALMUERZOS
+step 3, and `src/prompts/schedule.js`):
+- On Sat/Sun, Claude shares **next week's** almuerzo menu and explains the restaurant is
+  closed on weekends (no Sat/Sun delivery).
+- Claude actively offers to **schedule the order for the next business day** (Mon–Fri),
+  running the normal order flow (day → items → turno → address → summary → confirmation →
+  payment). This is a real order that fires Zoho on payment like any other.
+- Claude emits `HANDOFF` **only** if the customer insists on same-day weekend delivery,
+  or has a special request/complaint needing a human.
+
+> Historical note: an earlier version had a hardcoded `isAlmuerzoOrderOnWeekend`
+> interception in `src/index.js` that fired HANDOFF before calling Claude. It was removed
+> (commit ca32294). The weekend flow is now intentionally prompt-only to allow next-week
+> pre-booking — no deterministic code gate exists.
 
 ## src/tools/order.js Functions
 
