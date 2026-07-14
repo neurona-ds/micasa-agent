@@ -38,7 +38,7 @@ Core message processing: prompt building, Claude API calls, tool loop, handoff l
 processMessage(phone, message, name)
   → upsertCustomer()
   → Fanesca campaign override? (fast-path, no Claude)
-  → Weekend almuerzo? (deterministic HANDOFF)
+  → (weekend almuerzo is prompt-driven — no code gate; see business-logic.md)
   → getOrCreateSession()
 
   → Parallel DB fetch:
@@ -98,7 +98,7 @@ There is NO multi-agent framework. The "orchestration" is a single coordinator w
    - In-person close
    - Confirmation fast-path
    - Fanesca campaign
-   - Weekend almuerzo
+   (Weekend almuerzo is NOT a code bypass — it is handled inside the prompt; see business-logic.md)
 
 2. **Claude** for all other conversations with tool calling
 
