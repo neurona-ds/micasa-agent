@@ -7,19 +7,19 @@ paths:
 
 Core business rules for the WhatsApp sales agent.
 
-## Delivery Zones (4 Zones)
+## Delivery Zones & Pricing
 
-Calculated by Haversine straight-line distance from restaurant:
-**América y Juan José de Villalengua, Quito: `-0.1723433, -78.4910016`**
+**Pricing is authoritative from the external Micasa Delivery API** — never hardcoded.
+The bot sends the address + order context (`order_type`, `almuerzo_qty`, `subtotal`) to
+`getDeliveryQuote()` and uses the returned `delivery_gross` and `zone` verbatim. Do NOT
+maintain a per-zone fee table anywhere in code or docs — it drifts from the API and causes
+mis-quotes. See `.claude/rules/geocoding.md`.
 
-| Zone | Distance | Carta Delivery | Almuerzo Delivery |
-|---|---|---|---|
-| 1 | 0–2 km | Tiered by order value | 1 = $0.50, 2+ = FREE |
-| 2 | 2–4 km | Tiered by order value | 1 = $1.50, 2+ = $1.00 |
-| 3 | 4–6 km | Tiered by order value | 1 = $2.50, 2+ = $2.00 |
-| 4 | 6+ km | **ALWAYS HANDOFF** | Supervisor quotes manually |
-
-**Zone numbers are NEVER shown to customers.** Always injected as `[SISTEMA]` tags.
+Facts that still hold (not pricing):
+- The API returns a zone number (1–4) based on distance from the restaurant
+  (**América y Juan José de Villalengua, Quito: `-0.1723433, -78.4910016`**).
+- **Zone 4 → ALWAYS HANDOFF** (supervisor quotes manually; no order summary shown).
+- **Zone numbers are NEVER shown to customers.** Always injected as `[SISTEMA]` tags.
 
 ## Single Order vs. Lunch Plan (delivery charging)
 

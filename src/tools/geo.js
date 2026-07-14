@@ -29,6 +29,15 @@ const GEOCODING_TOOLS = [
         address: {
           type: 'string',
           description: 'The delivery address or location description provided by the customer'
+        },
+        orderType: {
+          type: 'string',
+          enum: ['almuerzo', 'carta', 'mixed'],
+          description: 'The type of the current order, based on what the customer is ordering: "almuerzo" (lunch menu), "carta" (à la carte dishes/beverages), or "mixed" (both). This drives the delivery pricing formula and multi-almuerzo discounts — set it accurately. If unsure, omit it.'
+        },
+        almuerzoQty: {
+          type: 'integer',
+          description: 'Number of almuerzos in the order (e.g. 2 for "dos almuerzos"). Required for correct almuerzo delivery pricing/discounts. Use 0 or omit for pure carta orders.'
         }
       },
       required: ['address']
@@ -43,6 +52,15 @@ const GEOCODING_TOOLS = [
         url: {
           type: 'string',
           description: 'The full Google Maps URL from the customer message'
+        },
+        orderType: {
+          type: 'string',
+          enum: ['almuerzo', 'carta', 'mixed'],
+          description: 'The type of the current order: "almuerzo", "carta", or "mixed". Drives delivery pricing/discounts — set it accurately. If unsure, omit it.'
+        },
+        almuerzoQty: {
+          type: 'integer',
+          description: 'Number of almuerzos in the order. Required for correct almuerzo delivery pricing/discounts. Use 0 or omit for pure carta orders.'
         }
       },
       required: ['url']
@@ -140,9 +158,20 @@ async function executeGeoTool(toolName, input, context) {
     fullHistory.push({ role: 'user', message: currentMessage })
   }
 
-  const orderType = detectOrderTypeFromHistory(fullHistory)
-  const qty = detectAlmuerzoQty(fullHistory)
+  // Prefer the order type / almuerzo qty Claude passes explicitly (it knows the
+  // order) — the history-based detection is a fallback for when Claude omits them.
+  // Sending the wrong order_type makes the API run the wrong pricing formula and
+  // skip multi-almuerzo delivery discounts (e.g. carta $2.25 vs almuerzo x2 $1.75).
+  const validTypes = ['almuerzo', 'carta', 'mixed']
+  const orderType = validTypes.includes(input.orderType)
+    ? input.orderType
+    : detectOrderTypeFromHistory(fullHistory)
+  const claudeQty = Number.isInteger(input.almuerzoQty) ? input.almuerzoQty : parseInt(input.almuerzoQty)
+  const qty = Number.isFinite(claudeQty) && claudeQty > 0
+    ? claudeQty
+    : detectAlmuerzoQty(fullHistory)
   const subtotal = await estimateSubtotal(fullHistory, orderType, qty)
+  console.log(`[executeGeoTool] orderType=${orderType} qty=${qty} (source: ${validTypes.includes(input.orderType) ? 'claude' : 'detected'}) subtotal=$${subtotal}`)
 
   if (toolName === 'geocode_address') {
     const address = input.address
@@ -203,14 +232,20 @@ async function executeGeoTool(toolName, input, context) {
 
     saveDeliveryAddress(phone, address, quote.zone, quote.distance_km).catch(() => {})
 
+    const discount = Number(quote.discount) || 0
+    const discountNote = discount > 0
+      ? ` This order earned a $${discount.toFixed(2)} delivery discount (${orderType === 'almuerzo' ? `${qty} almuerzos` : 'promoción'}). Mention it warmly in the summary, e.g. "Envío: $${quote.delivery_gross.toFixed(2)} (incluye $${discount.toFixed(2)} de descuento por ${qty} almuerzos 🎉)".`
+      : ''
+
     return {
       success: true,
       zone: quote.zone,
       distanceKm: quote.distance_km,
       formattedAddress: address,
       deliveryCost: quote.delivery_gross,
+      discount,
       isZone4: false,
-      instruction: `Use deliveryCost $${quote.delivery_gross != null ? quote.delivery_gross.toFixed(2) : '0.00'} exactly. Do NOT calculate or estimate a different price. Zone number must NEVER be shown to the customer.`
+      instruction: `Use deliveryCost $${quote.delivery_gross != null ? quote.delivery_gross.toFixed(2) : '0.00'} exactly. Do NOT calculate or estimate a different price. Zone number must NEVER be shown to the customer.${discountNote}`
     }
   }
 
@@ -268,14 +303,20 @@ async function executeGeoTool(toolName, input, context) {
     saveDeliveryZoneOnly(phone, quote.zone, quote.distance_km).catch(() => {})
     const locationUrl = quote.coords ? `https://www.google.com/maps?q=${quote.coords.lat},${quote.coords.lng}` : url
 
+    const discount = Number(quote.discount) || 0
+    const discountNote = discount > 0
+      ? ` This order earned a $${discount.toFixed(2)} delivery discount (${orderType === 'almuerzo' ? `${qty} almuerzos` : 'promoción'}). Mention it warmly in the summary, e.g. "Envío: $${quote.delivery_gross.toFixed(2)} (incluye $${discount.toFixed(2)} de descuento por ${qty} almuerzos 🎉)".`
+      : ''
+
     return {
       success: true,
       zone: quote.zone,
       distanceKm: quote.distance_km,
       deliveryCost: quote.delivery_gross,
+      discount,
       isZone4: false,
       locationUrl,
-      instruction: `Use deliveryCost $${quote.delivery_gross != null ? quote.delivery_gross.toFixed(2) : '0.00'} exactly. In the order summary write the address as "📍 ${url}". Do NOT show zone number to customer.`
+      instruction: `Use deliveryCost $${quote.delivery_gross != null ? quote.delivery_gross.toFixed(2) : '0.00'} exactly. In the order summary write the address as "📍 ${url}". Do NOT show zone number to customer.${discountNote}`
     }
   }
 
