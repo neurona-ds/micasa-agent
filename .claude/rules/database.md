@@ -162,11 +162,10 @@ Quantity-based pricing for almuerzo-only orders.
 | `is_free` | If true, delivery is free |
 | `requires_approval` | If true, HANDOFF (Zone 4) |
 
-**Current data:**
-- Zone 1: 1 almuerzo = $0.50, 2+ = FREE
-- Zone 2: 1 almuerzo = $1.50, 2+ = $1.00
-- Zone 3: 1 almuerzo = $2.50, 2+ = $2.00
-- Zone 4: always supervisor (HANDOFF)
+> **Pricing is authoritative from the external Micasa Delivery API**, not from these
+> tables. Do NOT reproduce per-zone fee values here or anywhere else — they drift from the
+> API and cause mis-quotes. These tables remain only as a legacy fallback still read by
+> `lookupDeliveryCost()`. See `.claude/rules/geocoding.md`.
 
 ---
 

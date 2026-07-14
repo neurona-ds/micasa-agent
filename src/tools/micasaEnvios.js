@@ -70,7 +70,7 @@ async function getDeliveryQuote({ address, orderType, almuerzoQty, subtotal }) {
         'X-API-Key': apiKey,
         'Content-Type': 'application/json'
       },
-      timeout: 5000
+      timeout: 9000
     })
 
     return response.data
