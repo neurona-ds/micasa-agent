@@ -7,9 +7,10 @@
 -- 593888888801-03) each triggered an advance and raced, advancing the cycle 8
 -- times in 2 minutes and corrupting the rotation by +3 (mod 5).
 --
--- Fix: getCurrentCycle() is now a PURE READ. The weekly advance lives here,
--- in a single scheduled executor that runs exactly once per week — immune to
--- message volume and races by construction.
+-- Fix: getCurrentCycle() is now a PURE READ. The weekly advance lives here, in a single
+-- scheduled executor that runs exactly once per week (Friday 23:45 Ecuador, AFTER service
+-- closes, so the weekend already holds next week's cycle) — immune to message volume and
+-- races by construction.
 --
 -- Run this ONCE in the Supabase SQL editor (Dashboard > SQL Editor).
 -- ============================================================================
@@ -37,9 +38,11 @@ begin
 
   nxt := (cur % cnt) + 1;
 
-  -- Monday of the current week in Ecuador time (UTC-5). date_trunc('week') is ISO (Mon).
+  -- Monday of the week this cycle will SERVE, in Ecuador time (America/Guayaquil = UTC-5,
+  -- no DST). The job runs Friday 23:45 Ecuador for the UPCOMING week, so add 3 days (Fri→Mon)
+  -- before truncating. date_trunc('week', ...) is ISO (Monday-based).
   monday := to_char(
-    (date_trunc('week', (now() at time zone 'America/Guayaquil')))::date,
+    (date_trunc('week', (now() at time zone 'America/Guayaquil') + interval '3 days'))::date,
     'YYYY-MM-DD'
   );
 
@@ -62,15 +65,24 @@ begin
 end;
 $$;
 
--- 3. Schedule: every Monday at 05:05 UTC = 00:05 Ecuador time (UTC-5, no DST).
---    Supabase DB timezone is UTC by default, so the cron string is in UTC.
+-- 3. Schedule: every Friday at 23:45 Ecuador time (America/Guayaquil = UTC-5, no DST)
+--    = Saturday 04:45 UTC. Cron string '45 4 * * 6' = minute 45, hour 04, any day-of-month,
+--    any month, day-of-week 6 (Saturday) — all in UTC.
+--    WHY Friday night: it advances AFTER Friday service closes (15:30 Ecuador), so the entire
+--    weekend the DB already holds NEXT week's cycle. Weekend menu queries are then correct
+--    straight from the DB, with NO cycle+1 adjustment in the app.
+--    TIMEZONE — IMPORTANT: pg_cron interprets the cron string in the DATABASE server timezone.
+--    Supabase runs the DB in UTC. Verify with:  show timezone;   -- expect 'UTC'
+--    This is also confirmed empirically by the audit log (the prior '5 5 * * 1' job fired at
+--    exactly 05:05:00Z). Keep the DB in UTC; if its timezone is ever changed, this trigger
+--    time shifts. (The date math above is Ecuador-aware via America/Guayaquil regardless.)
 --    If a job with this name already exists, unschedule it first (safe to run).
 select cron.unschedule('advance-almuerzo-cycle')
   where exists (select 1 from cron.job where jobname = 'advance-almuerzo-cycle');
 
 select cron.schedule(
   'advance-almuerzo-cycle',
-  '5 5 * * 1',
+  '45 4 * * 6',
   $$select advance_almuerzo_cycle();$$
 );
 

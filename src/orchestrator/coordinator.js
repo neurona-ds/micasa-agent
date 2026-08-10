@@ -413,16 +413,11 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     }
     // ──────────────────────────────────────────────────────────────────────────
 
-    // Read current cycle from DB (pg_cron advances it every Monday 00:05 Ecuador; read-only here).
+    // Read current cycle from DB (read-only; pg_cron owns the advance). The cron advances the
+    // cycle Friday 23:45 Ecuador — AFTER Friday service closes — so all weekend the DB already
+    // holds NEXT week's menu, and every Mon–Fri it holds that week's menu. The DB is the single
+    // source of truth for the cycle; no weekend adjustment is done in code.
     const currentCycle = await getCurrentCycle()
-
-    // Almuerzos only run Mon–Fri. On a weekend the cron has NOT advanced yet, so `current_cycle`
-    // still holds the week that just ended — but the only almuerzo a customer can actually order
-    // over the weekend is NEXT week's. Display cycle+1 (rotates 1→2→3→4→5→1) on weekends so the
-    // "próxima semana" menu reflects the real upcoming week, not the stale finished one.
-    const _nowEcCycle = nowInEcuador()
-    const _isWeekendCycle = _nowEcCycle.getDay() === 0 || _nowEcCycle.getDay() === 6
-    const menuCycle = _isWeekendCycle ? (currentCycle % 5) + 1 : currentCycle
 
     // Fetch all data in parallel (history fetched BEFORE saving new message)
     const [config, products, deliveryZones, deliveryTiers, almuerzoDeliveryTiers, weekAlmuerzos, paymentMethods, businessHours, history, storedGeo] = await Promise.all([
@@ -431,7 +426,7 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       getDeliveryZones(),
       getDeliveryTiers(),
       getAlmuerzoDeliveryTiers(),
-      getWeekAlmuerzos(menuCycle),
+      getWeekAlmuerzos(currentCycle),
       getPaymentMethods(),
       getBusinessHours(),
       getHistory(customerPhone, sessionId),   // session-scoped: only current order messages
