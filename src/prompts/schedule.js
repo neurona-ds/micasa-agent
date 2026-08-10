@@ -21,7 +21,7 @@ function buildScheduleBlock(businessHours, config, now, BH_DAYS_ES, MON_FIRST,
   const todayHoursStr = `${openT} a ${closeT}`
 
   return `FECHA Y HORA ACTUAL:
-Hoy es ${todayStr}. Hora actual en Ecuador: ${currentTimeStr}.${isWeekend ? ' Es fin de semana: el restaurante SÍ está abierto (horario normal, carta disponible), pero los fines de semana NO hay menú de almuerzo publicado — cualquier consulta sobre almuerzos debe derivarse a un agente humano (HANDOFF).' : ''}
+Hoy es ${todayStr}. Hora actual en Ecuador: ${currentTimeStr}.${isWeekend ? ' Es fin de semana: el restaurante SÍ está abierto (horario normal, carta disponible). Los almuerzos solo se sirven de lunes a viernes; el menú de almuerzos de este prompt YA corresponde a la PRÓXIMA semana. Si el cliente quiere un almuerzo para HOY mismo (este fin de semana) → HANDOFF; si pregunta por el menú o quiere pedir para un día hábil de la próxima semana → comparte el menú de la próxima semana y toma el pedido normalmente.' : ''}
 ${!isRestaurantOpen ? `⚠️ FUERA DE HORARIO: Son las ${currentTimeStr} — el restaurante está cerrado (opera ${openLabel}).` : ''}
 NUNCA menciones una fecha diferente a esta. NUNCA inventes ni supongas la fecha.
 
@@ -73,12 +73,12 @@ Si en esta conversación el cliente YA mencionó una fecha de entrega (mañana, 
 → Ejemplo correcto: cliente dijo "para el lunes 2 de marzo" → luego dice "mejor 4 fanescas en vez de almuerzos" → bot responde "4 Fanescas para el lunes 2 de marzo". ✅
 
 NOTA ALMUERZOS FIN DE SEMANA:
-El restaurante SÍ abre sábados y domingos en horario normal (la carta se atiende con normalidad).
-Los fines de semana NO hay un menú de almuerzo fijo publicado.
-Si el cliente pregunta por el almuerzo (menú del día, disponibilidad, precio, o quiere pedir un almuerzo) un sábado o domingo:
-→ NO inventes ni muestres ningún menú de almuerzo. NUNCA ofrezcas "el menú de la próxima semana".
-→ Deriva la conversación a un agente humano con HANDOFF para que le confirme el almuerzo disponible del día.
-NUNCA digas que el restaurante está cerrado el fin de semana — está abierto.
+El restaurante SÍ abre sábados y domingos en horario normal (la carta se atiende con normalidad). NUNCA digas que el restaurante está cerrado el fin de semana — está abierto.
+Los almuerzos (menú del día) SOLO se sirven de lunes a viernes.
+IMPORTANTE: el menú de almuerzos que aparece en este prompt durante el fin de semana YA corresponde a la PRÓXIMA semana (Lunes a Viernes) — es información válida y puedes compartirla.
+Distingue dos casos:
+  a) El cliente quiere un almuerzo para HOY mismo (este sábado o domingo) → NO hay almuerzo en fin de semana. Responde amablemente y emite HANDOFF para que un asesor lo atienda. No inventes un menú para hoy.
+  b) El cliente pregunta por el menú, o quiere pedir un almuerzo para un día HÁBIL (lunes a viernes) de la próxima semana → comparte el menú de la próxima semana (el de este prompt) y toma el pedido con el flujo normal (día específico, platos, turno de entrega, dirección, resumen y confirmación). NO hagas HANDOFF en este caso.
 
 HORARIOS Y TURNOS DE ALMUERZO:
 Los almuerzos se sirven en 3 turnos (Lunes a Viernes):
