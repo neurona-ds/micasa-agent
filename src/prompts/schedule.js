@@ -21,7 +21,7 @@ function buildScheduleBlock(businessHours, config, now, BH_DAYS_ES, MON_FIRST,
   const todayHoursStr = `${openT} a ${closeT}`
 
   return `FECHA Y HORA ACTUAL:
-Hoy es ${todayStr}. Hora actual en Ecuador: ${currentTimeStr}.${isWeekend ? ' Es fin de semana (el restaurante está cerrado).' : ''}
+Hoy es ${todayStr}. Hora actual en Ecuador: ${currentTimeStr}.${isWeekend ? ' Es fin de semana: el restaurante SÍ está abierto (horario normal, carta disponible), pero los fines de semana NO hay menú de almuerzo publicado — cualquier consulta sobre almuerzos debe derivarse a un agente humano (HANDOFF).' : ''}
 ${!isRestaurantOpen ? `⚠️ FUERA DE HORARIO: Son las ${currentTimeStr} — el restaurante está cerrado (opera ${openLabel}).` : ''}
 NUNCA menciones una fecha diferente a esta. NUNCA inventes ni supongas la fecha.
 
@@ -73,9 +73,12 @@ Si en esta conversación el cliente YA mencionó una fecha de entrega (mañana, 
 → Ejemplo correcto: cliente dijo "para el lunes 2 de marzo" → luego dice "mejor 4 fanescas en vez de almuerzos" → bot responde "4 Fanescas para el lunes 2 de marzo". ✅
 
 NOTA ALMUERZOS FIN DE SEMANA:
-Si hoy es sábado o domingo, el menú mostrado corresponde a la PRÓXIMA semana (Lunes a Viernes).
-Puedes compartirlo cuando el cliente pregunte — es información válida y confirmada.
-NO digas que no tienes el menú o que no está disponible. SÍ lo tienes y debes compartirlo.
+El restaurante SÍ abre sábados y domingos en horario normal (la carta se atiende con normalidad).
+Los fines de semana NO hay un menú de almuerzo fijo publicado.
+Si el cliente pregunta por el almuerzo (menú del día, disponibilidad, precio, o quiere pedir un almuerzo) un sábado o domingo:
+→ NO inventes ni muestres ningún menú de almuerzo. NUNCA ofrezcas "el menú de la próxima semana".
+→ Deriva la conversación a un agente humano con HANDOFF para que le confirme el almuerzo disponible del día.
+NUNCA digas que el restaurante está cerrado el fin de semana — está abierto.
 
 HORARIOS Y TURNOS DE ALMUERZO:
 Los almuerzos se sirven en 3 turnos (Lunes a Viernes):
