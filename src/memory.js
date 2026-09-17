@@ -836,6 +836,27 @@ async function resumeBot(phone) {
   if (error) console.error('Error resuming bot:', error)
 }
 
+// Timestamp of the most recent human-operator message for a customer, or null.
+// Operator messages are stored by the operator-assist block in index.js with an
+// "[OPERADOR]: " prefix and role='assistant'. Used by the stale-pause guard to
+// tell an actively-handled chat from an abandoned one.
+async function getLastOperatorMessageAt(phone) {
+  const { data, error } = await supabase
+    .from('conversations')
+    .select('timestamp')
+    .eq('customer_phone', phone)
+    .eq('role', 'assistant')
+    .like('message', '[OPERADOR]:%')
+    .order('timestamp', { ascending: false })
+    .limit(1)
+
+  if (error) {
+    console.error('Error fetching last operator message:', error)
+    return null
+  }
+  return data && data.length ? data[0].timestamp : null
+}
+
 module.exports = {
   saveMessage,
   getHistory,
@@ -856,6 +877,7 @@ module.exports = {
   isBotPaused,
   pauseBot,
   resumeBot,
+  getLastOperatorMessageAt,
   saveDeliveryAddress,
   saveRawAddress,
   saveLocationPin,
