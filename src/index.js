@@ -4,7 +4,7 @@ const express = require('express')
 const axios = require('axios')
 const { processMessage, triggerZohoOnPayment, closeOrderSession, hasPendingOrder } = require('./agent')
 const { getDeliveryQuote } = require('./tools/micasaEnvios')
-const { isBotPaused, pauseBot, resumeBot, getDeliveryZoneByCoordinates, saveDeliveryZoneOnly, saveDeliveryAddress, saveLocationPin, getPendingOrder, savePendingOrder, lookupDeliveryCost, clearPendingOrder, saveMessage, getOrCreateSession, saveCampanaMeta, getHistory } = require('./memory')
+const { isBotPaused, pauseBot, resumeBot, getLastOperatorMessageAt, getDeliveryZoneByCoordinates, saveDeliveryZoneOnly, saveDeliveryAddress, saveLocationPin, getPendingOrder, savePendingOrder, lookupDeliveryCost, clearPendingOrder, saveMessage, getOrCreateSession, saveCampanaMeta, getHistory } = require('./memory')
 const { detectOrderTypeFromHistory, detectAlmuerzoQty } = require('./tools/order')
 const { estimateSubtotal } = require('./tools/geo')
 
@@ -287,7 +287,11 @@ app.post('/webhook', async (req, res) => {
     // Check if bot is paused (skip check if we just resumed above)
     if (!justResumed) {
       const paused = await isBotPaused(customerPhone)
-      if (paused) {
+      if (paused && await isStalePause(customerPhone, customerName)) {
+        // Abandoned pause — isStalePause() already resumed the bot and alerted
+        // the admin. Fall through and handle this message normally.
+        justResumed = true
+      } else if (paused) {
         // Save customer text messages to history while bot is paused,
         // so Claude has full context when the bot eventually resumes.
         const incomingType = (body.type || 'text').toLowerCase()
@@ -672,6 +676,80 @@ async function sendWatiMessage(phone, message) {
     console.error(`[WATI] FAILED to send message to ${phone}:`, error.response?.data || error.message)
     return false
   }
+}
+
+// ── STALE-PAUSE GUARD ───────────────────────────────────────────────────────
+// A chat can get stuck paused forever. pauseBot() fires on EVERY operator
+// message, but auto-resume only fires when the operator's text carries a cost,
+// a "zona N" or "orden confirmada". An operator who replies with a PDF, an image
+// or plain conversation pauses the bot with no path back. If the chat is later
+// unassigned in WATI (assignedId and operatorEmail both null) neither
+// isAssignedToBot nor isAssignedToHuman matches, so nothing ever resumes it:
+// the customer's messages are saved to history and dropped, returning 200 with
+// no alert. Seen in production — one chat sat dead from 2026-08-15 to 09-17.
+//
+// A pause with no human activity for STALE_PAUSE_HOURS is treated as abandoned:
+// resume the bot, alert the admin, and let the message through. A genuinely
+// human-handled chat is either assigned to a human in WATI (returns earlier, it
+// never reaches here) or has a recent [OPERADOR] message, so it is left alone.
+const STALE_PAUSE_HOURS = Number(process.env.STALE_PAUSE_HOURS || 12)
+
+// conversations.timestamp is `timestamp without time zone` holding UTC. JS parses
+// an ISO string with no offset as LOCAL time, which skews the comparison on any
+// non-UTC host — the same class of bug as the nowInEcuador() offset fix. Force UTC.
+function parseDbTimestamp(ts) {
+  if (!ts) return null
+  const hasZone = /[zZ]$|[+-]\d{2}:?\d{2}$/.test(ts)
+  const d = new Date(hasZone ? ts : `${ts}Z`)
+  return isNaN(d.getTime()) ? null : d
+}
+
+// Returns true (and resumes the bot) when a paused chat looks abandoned.
+// Never throws — on any error it reports "not stale" so the existing paused
+// behaviour stands and a DB hiccup can't set the bot loose on a live handoff.
+async function isStalePause(customerPhone, customerName) {
+  try {
+    const lastOpRaw = await getLastOperatorMessageAt(customerPhone)
+    const lastOp = parseDbTimestamp(lastOpRaw)
+    const idleMs = lastOp ? Date.now() - lastOp.getTime() : null
+
+    // No operator message on record + not assigned to anyone = nothing is handling
+    // this chat. Otherwise require STALE_PAUSE_HOURS of silence from the operator.
+    const stale = idleMs === null || idleMs > STALE_PAUSE_HOURS * 60 * 60 * 1000
+    if (!stale) return false
+
+    await resumeBot(customerPhone)
+    const idleLabel = idleMs === null
+      ? 'no operator message on record'
+      : `${Math.floor(idleMs / 3600000)}h since last operator message`
+    console.log(`[stale-pause] Auto-resumed ${customerPhone} — ${idleLabel}`)
+
+    // Fire-and-forget: the customer must not wait on the admin notification,
+    // and a WATI failure must not block their reply.
+    notifyStalePause(customerPhone, customerName, idleLabel)
+      .catch(e => console.warn('[stale-pause] admin notify failed:', e.message))
+
+    return true
+  } catch (e) {
+    console.error('[stale-pause] check failed — leaving chat paused:', e.message)
+    return false
+  }
+}
+
+// Tell the admin the bot took a chat back, so a human can step in if the pause
+// was intentional. Informational — the customer is already being served.
+async function notifyStalePause(customerPhone, customerName, idleLabel) {
+  const adminPhone = process.env.ADMIN_PHONE
+  if (!adminPhone) return
+
+  await sendWatiMessage(adminPhone,
+    `♻️ *BOT REACTIVADO*\n` +
+    `Cliente: ${customerName || 'Desconocido'}\n` +
+    `Teléfono: ${customerPhone}\n` +
+    `El chat estaba pausado sin actividad de un asesor (${idleLabel}).\n` +
+    `El bot retomó la conversación. Si querías seguir atendiéndolo, respóndele en WATI.`
+  )
+  console.log(`[stale-pause] Admin (${adminPhone}) notified for ${customerPhone}`)
 }
 
 // Notify admin via WhatsApp when handoff is needed
