@@ -287,9 +287,9 @@ app.post('/webhook', async (req, res) => {
     // Check if bot is paused (skip check if we just resumed above)
     if (!justResumed) {
       const paused = await isBotPaused(customerPhone)
-      if (paused && await isStalePause(customerPhone, customerName)) {
-        // Abandoned pause — isStalePause() already resumed the bot and alerted
-        // the admin. Fall through and handle this message normally.
+      if (paused && await isStalePause(customerPhone)) {
+        // Abandoned pause — isStalePause() already resumed the bot.
+        // Fall through and handle this message normally.
         justResumed = true
       } else if (paused) {
         // Save customer text messages to history while bot is paused,
@@ -689,7 +689,8 @@ async function sendWatiMessage(phone, message) {
 // no alert. Seen in production — one chat sat dead from 2026-08-15 to 09-17.
 //
 // A pause with no human activity for STALE_PAUSE_HOURS is treated as abandoned:
-// resume the bot, alert the admin, and let the message through. A genuinely
+// resume the bot and let the message through. Recovery is logged to Railway only
+// (grep "[stale-pause]") — deliberately no WhatsApp alert. A genuinely
 // human-handled chat is either assigned to a human in WATI (returns earlier, it
 // never reaches here) or has a recent [OPERADOR] message, so it is left alone.
 const STALE_PAUSE_HOURS = Number(process.env.STALE_PAUSE_HOURS || 12)
@@ -707,7 +708,7 @@ function parseDbTimestamp(ts) {
 // Returns true (and resumes the bot) when a paused chat looks abandoned.
 // Never throws — on any error it reports "not stale" so the existing paused
 // behaviour stands and a DB hiccup can't set the bot loose on a live handoff.
-async function isStalePause(customerPhone, customerName) {
+async function isStalePause(customerPhone) {
   try {
     const lastOpRaw = await getLastOperatorMessageAt(customerPhone)
     const lastOp = parseDbTimestamp(lastOpRaw)
@@ -724,32 +725,11 @@ async function isStalePause(customerPhone, customerName) {
       : `${Math.floor(idleMs / 3600000)}h since last operator message`
     console.log(`[stale-pause] Auto-resumed ${customerPhone} — ${idleLabel}`)
 
-    // Fire-and-forget: the customer must not wait on the admin notification,
-    // and a WATI failure must not block their reply.
-    notifyStalePause(customerPhone, customerName, idleLabel)
-      .catch(e => console.warn('[stale-pause] admin notify failed:', e.message))
-
     return true
   } catch (e) {
     console.error('[stale-pause] check failed — leaving chat paused:', e.message)
     return false
   }
-}
-
-// Tell the admin the bot took a chat back, so a human can step in if the pause
-// was intentional. Informational — the customer is already being served.
-async function notifyStalePause(customerPhone, customerName, idleLabel) {
-  const adminPhone = process.env.ADMIN_PHONE
-  if (!adminPhone) return
-
-  await sendWatiMessage(adminPhone,
-    `♻️ *BOT REACTIVADO*\n` +
-    `Cliente: ${customerName || 'Desconocido'}\n` +
-    `Teléfono: ${customerPhone}\n` +
-    `El chat estaba pausado sin actividad de un asesor (${idleLabel}).\n` +
-    `El bot retomó la conversación. Si querías seguir atendiéndolo, respóndele en WATI.`
-  )
-  console.log(`[stale-pause] Admin (${adminPhone}) notified for ${customerPhone}`)
 }
 
 // Notify admin via WhatsApp when handoff is needed
