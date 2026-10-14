@@ -67,6 +67,20 @@ const client = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY
 })
 
+// Claude Sonnet 5.5 thinks by default. This chat doesn't need it:
+// 'between_tools' turns extended thinking off (it is Sonnet 5.5's only
+// thinking-off setting; 'disabled' returns a 400), and 'low' effort keeps
+// WhatsApp replies fast and short.
+const CLAUDE_MODEL    = 'claude-sonnet-5-5'
+const CLAUDE_EFFORT   = 'low'
+const CLAUDE_THINKING = { type: 'between_tools' }
+
+// Responses can start with a thinking block, so never read content[0].
+function firstText(response) {
+  const block = (response.content || []).find(b => b.type === 'text')
+  return block ? block.text : ''
+}
+
 // Return a Date object representing the current moment in Ecuador time (UTC-5).
 // Ecuador does not observe DST so this offset is always fixed.
 // We use this everywhere we need "today" — using raw new Date() returns UTC
@@ -593,7 +607,9 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
 
     // First Claude call — may respond with tool_use if geocoding is needed
     let response = await client.messages.create({
-      model: 'claude-sonnet-4-5',
+      model: CLAUDE_MODEL,
+      output_config: { effort: CLAUDE_EFFORT },
+      thinking: CLAUDE_THINKING,
       max_tokens: 2048,
       system: [
         {
@@ -643,7 +659,9 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       ]
 
       response = await client.messages.create({
-        model: 'claude-sonnet-4-5',
+        model: CLAUDE_MODEL,
+        output_config: { effort: CLAUDE_EFFORT },
+        thinking: CLAUDE_THINKING,
         max_tokens: 2048,
         system: [
           {
@@ -696,13 +714,16 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         { role: 'user', content: '[SISTEMA INTERNO: Tu respuesta anterior no incluyó el bloque <ORDEN> obligatorio. Repite el resumen completo e incluye el bloque <ORDEN>{...}</ORDEN> inmediatamente después de "¿Confirmas tu pedido?". Este bloque es requerido por el sistema para procesar el pedido.]' }
       ]
       const retryResponse = await client.messages.create({
-        model: 'claude-sonnet-4-5',
+        model: CLAUDE_MODEL,
+        output_config: { effort: CLAUDE_EFFORT },
+        thinking: CLAUDE_THINKING,
         max_tokens: 2048,
         system: [{ type: 'text', text: fullSystemPrompt }],
         messages: retryMessages
       })
-      if (retryResponse.content?.[0]?.text?.includes('<ORDEN>')) {
-        replyText = retryResponse.content[0].text
+      const retryText = firstText(retryResponse)
+      if (retryText.includes('<ORDEN>')) {
+        replyText = retryText
         console.log('[ORDEN missing] Retry succeeded — <ORDEN> present in retry response')
       } else {
         console.warn('[ORDEN missing] Retry also missing <ORDEN> — proceeding with original response')
