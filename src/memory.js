@@ -857,6 +857,28 @@ async function getLastOperatorMessageAt(phone) {
   return data && data.length ? data[0].timestamp : null
 }
 
+// True when the bot (or an operator) already sent `marker` to this customer in
+// the last `days` days. Read-only check over conversations, used to send the
+// app promo at most once per period. Fails closed: on error it returns true,
+// so a DB hiccup never makes the bot repeat the promo.
+async function hasRecentMessageContaining(phone, marker, days) {
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString()
+  const { data, error } = await supabase
+    .from('conversations')
+    .select('timestamp')
+    .eq('customer_phone', phone)
+    .eq('role', 'assistant')
+    .like('message', `%${marker}%`)
+    .gte('timestamp', since)
+    .limit(1)
+
+  if (error) {
+    console.error('Error checking recent message:', error)
+    return true
+  }
+  return !!(data && data.length)
+}
+
 module.exports = {
   saveMessage,
   getHistory,
@@ -890,5 +912,6 @@ module.exports = {
   getPendingOrder,
   clearPendingOrder,
   getOrCreateSession,
-  endSession
+  endSession,
+  hasRecentMessageContaining
 }

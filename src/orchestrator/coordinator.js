@@ -1,6 +1,6 @@
 const Anthropic = require('@anthropic-ai/sdk')
 const axios = require('axios')
-const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getAlmuerzoDeliveryTiers, getDeliveryZoneByAddress, getCurrentCycle, getWeekAlmuerzos, getPaymentMethods, saveDeliveryAddress, saveRawAddress, getCustomerAddress, getBusinessHours, lookupDeliveryCost, savePendingOrder, getPendingOrder, clearPendingOrder, getOrCreateSession, endSession } = require('../memory')
+const { getHistory, saveMessage, upsertCustomer, getAllConfig, getProducts, getDeliveryZones, getDeliveryTiers, getAlmuerzoDeliveryTiers, getDeliveryZoneByAddress, getCurrentCycle, getWeekAlmuerzos, getPaymentMethods, saveDeliveryAddress, saveRawAddress, getCustomerAddress, getBusinessHours, lookupDeliveryCost, savePendingOrder, getPendingOrder, clearPendingOrder, getOrCreateSession, endSession, hasRecentMessageContaining } = require('../memory')
 const { createZohoDeliveryRecord, createZohoDealRecord } = require('../zoho')
 
 // Page the admin via WhatsApp when a critical post-payment step fails (Zoho record
@@ -74,6 +74,18 @@ const client = new Anthropic({
 const CLAUDE_MODEL    = 'claude-sonnet-5-5'
 const CLAUDE_EFFORT   = 'low'
 const CLAUDE_THINKING = { type: 'between_tools' }
+
+// App promo: added once per customer every APP_PROMO_EVERY_DAYS days to the
+// order-confirmed message. Only "next time" wording: WhatsApp orders go to Zoho,
+// not the Hub, so the app cannot show THIS order or a plan bought here.
+const APP_PROMO_LINK       = 'https://go.micasauio.com/webapp'
+const APP_PROMO_TEXT       = `La próxima vez también puedes pedir desde la app de Micasa: ves el estado de tu pedido y tus direcciones quedan guardadas.\n${APP_PROMO_LINK}`
+const APP_PROMO_EVERY_DAYS = 30
+
+async function withAppPromo(phone, reply) {
+  const alreadySent = await hasRecentMessageContaining(phone, APP_PROMO_LINK, APP_PROMO_EVERY_DAYS)
+  return alreadySent ? reply : `${reply}\n\n${APP_PROMO_TEXT}`
+}
 
 // Responses can start with a thinking block, so never read content[0].
 function firstText(response) {
@@ -591,11 +603,13 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
         const bankInfo = formatPaymentMethods(paymentMethods)
         const paymentReply = `¡Perfecto! Tu pedido está confirmado 🎉\n\nAquí están los datos para tu transferencia:\n\n${bankInfo}\n\n*Monto a transferir: ${totalAmount}*\n\nUna vez realices la transferencia, envíanos la captura del comprobante para procesar tu pedido. ¡Gracias por confiar en nosotros! 💛`
 
+        const confirmedReply = await withAppPromo(customerPhone, paymentReply)
+
         await saveMessage(customerPhone, 'user', customerMessage, sessionId)
-        await saveMessage(customerPhone, 'assistant', paymentReply, sessionId)
+        await saveMessage(customerPhone, 'assistant', confirmedReply, sessionId)
 
         return {
-          reply: paymentReply,
+          reply: confirmedReply,
           needsHandoff: false,
           needsPaymentHandoff: false
         }
