@@ -514,7 +514,7 @@ app.post('/webhook', async (req, res) => {
         }
 
         const result = await processMessage(customerPhone, locationMessage, customerName)
-        await sendWatiMessage(customerPhone, result.reply)
+        if (result.reply) await sendWatiMessage(customerPhone, result.reply)
         if (result.needsPaymentHandoff) {
           await notifyHandoff(customerPhone, customerName, 'PAYMENT', locationMessage)
         } else if (result.needsHandoff) {
@@ -588,8 +588,10 @@ app.post('/webhook', async (req, res) => {
       // Send reply to customer
       // Payment messages are split into two: bank accounts + follow-up instructions
       const PAYMENT_SPLIT_MARKERS = ['Una vez realices la transferencia', 'Una vez hecho el pago', 'Una vez realizada la transferencia']
-      const splitMarker = PAYMENT_SPLIT_MARKERS.find(m => reply.includes(m))
-      if (splitMarker) {
+      const splitMarker = reply ? PAYMENT_SPLIT_MARKERS.find(m => reply.includes(m)) : null
+      if (!reply) {
+        // No answer needed (bare 👍 / "gracias" / comment) — send nothing.
+      } else if (splitMarker) {
         const splitIdx = reply.indexOf(splitMarker)
         const msg1 = reply.substring(0, splitIdx).trim()
         const msg2 = reply.substring(splitIdx).trim()

@@ -56,6 +56,7 @@ async function fireZohoAndClear(orderData, phone, customerName) {
 }
 const { detectOrderTypeFromHistory, detectAlmuerzoQty, extractOrderDataForZoho, parseScheduledDate } = require('../tools/order')
 const { GEOCODING_TOOLS, executeGeoTool } = require('../tools/geo')
+const { isNoReplyNeeded } = require('../tools/noReply')
 const fs   = require('fs')
 const path = require('path')
 require('dotenv').config({ path: path.resolve(__dirname, '../../.env'), override: true })
@@ -459,6 +460,16 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       getCustomerAddress(customerPhone).catch(() => null)
     ])
 
+    // Messages that need no answer (a bare 👍, "gracias", "ok" after the bot
+    // already said its piece) get silence: no Claude call, no WhatsApp message.
+    // The customer's message is still saved so the context stays complete.
+    const lastBotMessage = ([...history].reverse().find(h => h.role === 'assistant') || {}).message || ''
+    if (isNoReplyNeeded(customerMessage, lastBotMessage)) {
+      console.log(`[no-reply] No answer needed for "${customerMessage}" from ${customerPhone}`)
+      await saveMessage(customerPhone, 'user', customerMessage, sessionId)
+      return { reply: null, needsHandoff: false, needsPaymentHandoff: false }
+    }
+
     const fullSystemPrompt = buildSystemPrompt(config, products, deliveryZones, deliveryTiers, weekAlmuerzos, paymentMethods, almuerzoDeliveryTiers, businessHours)
 
     // Build messages array for Claude — ensure alternating roles (no two consecutive same role)
@@ -752,10 +763,20 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
       .replace(/<ORDEN>[\s\S]*?<\/ORDEN>/g, '')
       .replace(/\[SISTEMA:[^\]]*\]/g, '')
       .trim()
+    const replyWithoutNoReply = cleanReplyText.replace(/\bNO_REPLY\b/g, '').trim()
+
+    // Claude answers exactly NO_REPLY when the message needs no answer (a
+    // comment, an opinion, a goodbye, a repeated price complaint). Send
+    // nothing and keep only the customer's message in history.
+    if (replyWithoutNoReply === '') {
+      console.log(`[no-reply] Claude chose not to answer "${customerMessage}" from ${customerPhone}`)
+      await saveMessage(customerPhone, 'user', customerMessage, sessionId)
+      return { reply: null, needsHandoff: false, needsPaymentHandoff: false }
+    }
 
     // Save both messages only after Claude succeeds (session-scoped)
     await saveMessage(customerPhone, 'user', customerMessage, sessionId)
-    await saveMessage(customerPhone, 'assistant', cleanReplyText, sessionId)
+    await saveMessage(customerPhone, 'assistant', replyWithoutNoReply, sessionId)
 
     // ── Persist order snapshot from <ORDEN> JSON block ────────────────────────
     // Claude emits a hidden <ORDEN>{...}</ORDEN> block in every order summary.
@@ -919,7 +940,7 @@ async function processMessage(customerPhone, customerMessage, customerName = nul
     // When HANDOFF is present, truncate at the token — discard any text Claude
     // added after it (e.g. "Mientras tanto, te ayudo...") so the customer only
     // sees the scripted message and nothing more.
-    let cleanReply = cleanReplyText
+    let cleanReply = replyWithoutNoReply
     if (needsPaymentHandoff) {
       cleanReply = cleanReply.split('HANDOFF_PAYMENT')[0].trim()
     } else if (needsHandoff) {
@@ -1008,4 +1029,4 @@ async function closeOrderSession(phone) {
   console.log(`[closeOrderSession] Session closed for ${phone}`)
 }
 
-module.exports = { processMessage, triggerZohoOnPayment, closeOrderSession, hasPendingOrder: (phone) => getPendingOrder(phone).then(Boolean).catch(() => false) }
+module.exports = { processMessage, buildSystemPrompt, triggerZohoOnPayment, closeOrderSession, hasPendingOrder: (phone) => getPendingOrder(phone).then(Boolean).catch(() => false) }
